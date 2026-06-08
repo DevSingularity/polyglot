@@ -2,12 +2,7 @@ const REQUIRED = [
   'DATABASE_URL',
   'REDIS_URL',
   'JWT_SECRET',
-  'GITHUB_CLIENT_ID',
-  'GITHUB_CLIENT_SECRET',
-  'SESSION_SECRET',
 ];
-
-const AUTH_ONLY = new Set(['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET', 'SESSION_SECRET']);
 
 function isTestEnvironment() {
   return (
@@ -19,13 +14,7 @@ function isTestEnvironment() {
 export function validateEnv() {
   const test = isTestEnvironment();
 
-  const missing = REQUIRED.filter((key) => {
-    if (!process.env[key]) {
-      if (test && AUTH_ONLY.has(key)) return false;
-      return true;
-    }
-    return false;
-  });
+  const missing = REQUIRED.filter((key) => !process.env[key]);
 
   if (missing.length > 0) {
     const msg = `[startup] Missing required env vars: ${missing.join(', ')}`;
