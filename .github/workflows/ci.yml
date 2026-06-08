@@ -38,6 +38,7 @@ jobs:
         run: npm run test:coverage
         working-directory: server
         env:
+          NODE_ENV: test
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/polyglot_test
           REDIS_URL: redis://localhost:6379
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -46,6 +47,7 @@ jobs:
         run: npm test
         working-directory: server
         env:
+          NODE_ENV: test
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/polyglot_test
           REDIS_URL: redis://localhost:6379
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
