@@ -1,5 +1,6 @@
 import { BaseAgent } from '../core/BaseAgent.js';
 import { scorePersistence } from '../core/confidence.js';
+import { logger } from '../../utils/logger.js';
 
 export class PersistenceAgent extends BaseAgent {
   agentId = 'persistence-agent';
@@ -76,7 +77,7 @@ export class PersistenceAgent extends BaseAgent {
         processingTimeMs: Date.now() - start,
       });
     } catch (error) {
-      console.error('[PersistenceAgent] Storage error:', error.message);
+      logger.error('[PersistenceAgent] Storage error:', error.message);
       return this.buildResult({
         jobId,
         status: 'failed',

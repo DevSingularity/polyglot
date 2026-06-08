@@ -72,7 +72,8 @@ export async function persistCacheMetricsSnapshot(metricsSnapshot) {
     await redisClient.zRemRangeByScore(METRICS_INDEX_KEY, 0, cutoffTime);
   } catch (error) {
     // Silent failure: don't crash observability system if Redis is temporarily down
-    console.warn('[cache-metrics-persistence] Failed to persist snapshot:', error?.message);
+    const { logger } = await import('../utils/logger.js');
+    logger.warn('[cache-metrics-persistence] Failed to persist snapshot:', error?.message);
   }
 }
 
@@ -117,7 +118,8 @@ export async function getCacheMetricsHistory(startSeconds, endSeconds) {
 
     return snapshots;
   } catch (error) {
-    console.warn('[cache-metrics-persistence] Failed to retrieve history:', error?.message);
+    const { logger } = await import('../utils/logger.js');
+    logger.warn('[cache-metrics-persistence] Failed to retrieve history:', error?.message);
     return [];
   }
 }
@@ -143,7 +145,8 @@ export async function getLatestCacheMetrics() {
     const data = await redisClient.get(bucketKey);
     return data ? JSON.parse(data) : null;
   } catch (error) {
-    console.warn('[cache-metrics-persistence] Failed to retrieve latest:', error?.message);
+    const { logger } = await import('../utils/logger.js');
+    logger.warn('[cache-metrics-persistence] Failed to retrieve latest:', error?.message);
     return null;
   }
 }
@@ -164,7 +167,8 @@ export async function clearCacheMetricsHistory() {
     }
     await redisClient.del(METRICS_INDEX_KEY);
   } catch (error) {
-    console.warn('[cache-metrics-persistence] Failed to clear history:', error?.message);
+    const { logger } = await import('../utils/logger.js');
+    logger.warn('[cache-metrics-persistence] Failed to clear history:', error?.message);
   }
 }
 

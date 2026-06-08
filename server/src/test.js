@@ -11,13 +11,15 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
   try {
     const res = await pgPool.query('SELECT NOW()');
-    console.log('Postgres time:', res.rows[0]);
+    const { logger } = await import('./utils/logger.js');
+    logger.info('Postgres time:', res.rows[0]);
 
     await redisClient.set('test', 'hello');
     const val = await redisClient.get('test');
-    console.log('Redis value:', val);
+    logger.info('Redis value:', val);
   } catch (error) {
-    console.error('Connection test failed:', error);
+    const { logger } = await import('./utils/logger.js');
+    logger.error('Connection test failed:', error);
     process.exitCode = 1;
   } finally {
     await redisClient.quit();

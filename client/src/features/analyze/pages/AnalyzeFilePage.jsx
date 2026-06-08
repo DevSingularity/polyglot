@@ -29,13 +29,15 @@ import { Button } from '@/components/ui/button';
 import {
   fetchRepositoryFile,
   fetchRepositoryStructure,
-  saveRepositoryFile,
+  saveProtectedBranch,
   selectAnalyzeFile,
   selectAnalyzeSelectedRepository,
   selectAnalyzeStructure,
+  commitFile,
 } from '../slices/analyzeSlice';
 import { AiPanel } from '@/features/ai';
 import { loadSavedGraph, selectGraphData } from '@/features/graph';
+import { graphService } from '@/features/graph/services/graphService';
 import { aiService } from '@/features/ai/services/aiService';
 
 function detectPrismLanguage(filePath = '') {
@@ -93,6 +95,42 @@ function confidenceTone(score) {
   return 'text-rose-600';
 }
 
+function buildRepoStorageKey(repository) {
+  if (!repository?.owner || !repository?.repo) return '';
+  return `polyglot:protect-main:${repository.owner}/${repository.repo}`;
+}
+
+function buildBranchSlug(filePath = '') {
+  return String(filePath || '')
+    .toLowerCase()
+    .replace(/[\\/]+/g, '-')
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/^\.+/, '')
+    .slice(0, 48) || 'file';
+}
+
+function ProtectMainToggle({ id, checked, onChange, className = '' }) {
+  return (
+    <>
+      <input
+        type="checkbox"
+        className="peer sr-only opacity-0"
+        id={id}
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <label
+        htmlFor={id}
+        className={`relative flex h-6 w-11 cursor-pointer items-center rounded-full border border-border/60 bg-muted/80 px-0.5 transition-colors before:h-5 before:w-5 before:rounded-full before:bg-background before:shadow-sm before:transition-transform before:duration-300 peer-checked:bg-emerald-500 peer-checked:before:translate-x-full peer-focus-visible:ring-2 peer-focus-visible:ring-emerald-500 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background ${className}`}
+      >
+        <span className="sr-only">Enable</span>
+      </label>
+    </>
+  );
+}
+
 export default function AnalyzeFilePage() {
   const dispatch = useDispatch();
   const navigate = useNavigate();
@@ -115,6 +153,28 @@ export default function AnalyzeFilePage() {
     lineStart: null,
     lineEnd: null,
     data: null,
+  });
+  const [isCreatePrModalOpen, setIsCreatePrModalOpen] = useState(false);
+  const [createPrState, setCreatePrState] = useState({
+    sourceBranch: '',
+    targetBranch: '',
+    commitMessage: '',
+    prTitle: '',
+    prBody: '',
+    isSubmitting: false,
+    error: '',
+  });
+  const [createPrBranches, setCreatePrBranches] = useState([]);
+  const [createPrBranchesLoading, setCreatePrBranchesLoading] = useState(false);
+  const [createPrBranchesError, setCreatePrBranchesError] = useState('');
+  const [isProtectSaveModalOpen, setIsProtectSaveModalOpen] = useState(false);
+  const [protectMain, setProtectMain] = useState(true);
+  const [protectSaveState, setProtectSaveState] = useState({
+    baseBranch: '',
+    newBranchName: '',
+    commitMessage: '',
+    isSubmitting: false,
+    error: '',
   });
   const [isSnippetDrawerOpen, setIsSnippetDrawerOpen] = useState(false);
   const [isMobileSnippetSheetOpen, setIsMobileSnippetSheetOpen] = useState(false);
@@ -188,6 +248,83 @@ export default function AnalyzeFilePage() {
     setSnippetPopoverAnchor((prev) => ({ ...prev, visible: false }));
   }, [fileState.data?.content, fileState.data?.path]);
 
+  const protectMainStorageKey = useMemo(() => buildRepoStorageKey(selectedRepository), [selectedRepository]);
+
+  useEffect(() => {
+    if (!protectMainStorageKey) return;
+
+    try {
+      const stored = window.localStorage.getItem(protectMainStorageKey);
+      if (stored === null) return;
+      setProtectMain(stored === '1');
+    } catch {
+      setProtectMain(true);
+    }
+  }, [protectMainStorageKey]);
+
+  useEffect(() => {
+    if (!protectMainStorageKey) return;
+
+    try {
+      window.localStorage.setItem(protectMainStorageKey, protectMain ? '1' : '0');
+    } catch {
+      // ignore storage failures
+    }
+  }, [protectMain, protectMainStorageKey]);
+
+  useEffect(() => {
+    if ((!isCreatePrModalOpen && !isProtectSaveModalOpen) || !selectedRepository?.owner || !selectedRepository?.repo) return;
+
+    let cancelled = false;
+    const loadBranches = async () => {
+      setCreatePrBranchesLoading(true);
+      setCreatePrBranchesError('');
+
+      try {
+        const payload = await graphService.getRepoBranches({
+          source: selectedRepository.mode === 'owned' ? 'owned' : 'public',
+          owner: selectedRepository.owner,
+          repo: selectedRepository.repo,
+          url: selectedRepository.url || undefined,
+        });
+
+        if (cancelled) return;
+
+        const branches = Array.isArray(payload?.branches) ? payload.branches.map((item) => item?.name).filter(Boolean) : [];
+        setCreatePrBranches(branches);
+
+        setCreatePrState((prev) => {
+          const currentSource = String(prev.sourceBranch || '').trim();
+          const currentTarget = String(prev.targetBranch || '').trim();
+
+          const fallbackTarget = selectedRepository.defaultBranch || selectedRepository.branch || branches[0] || 'main';
+          const fallbackSource = currentTarget && currentTarget !== 'main' ? currentTarget : `${fallbackTarget}-polyglot-${Date.now()}`;
+
+          if (currentSource && currentTarget && branches.includes(currentSource) && branches.includes(currentTarget)) return prev;
+
+          return {
+            ...prev,
+            sourceBranch: currentSource || fallbackSource,
+            targetBranch: currentTarget || fallbackTarget,
+          };
+        });
+      } catch (error) {
+        if (!cancelled) {
+          setCreatePrBranches([]);
+          setCreatePrBranchesError(error?.response?.data?.error || error?.message || 'Failed to load branches.');
+        }
+      } finally {
+        if (!cancelled) setCreatePrBranchesLoading(false);
+      }
+    };
+
+    loadBranches();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isCreatePrModalOpen, isProtectSaveModalOpen, selectedRepository?.owner, selectedRepository?.repo, selectedRepository?.mode, selectedRepository?.url, selectedRepository?.defaultBranch, selectedRepository?.branch]);
+
   useEffect(() => {
     return () => {
       if (snippetDebounceRef.current) {
@@ -210,6 +347,12 @@ export default function AnalyzeFilePage() {
     return Prism.highlight(value, grammar, codeLanguage);
   }, [codeLanguage, fileState.data?.content]);
 
+  const highlightedLines = useMemo(() => {
+    const raw = String(fileState.data?.content || '');
+    const grammar = Prism.languages[codeLanguage] || Prism.languages.clike;
+    return raw.split('\n').map((line) => Prism.highlight(line || '\n', grammar, codeLanguage));
+  }, [codeLanguage, fileState.data?.content]);
+
   const viewerLineCount = useMemo(() => {
     const value = String(fileState.data?.content || '');
     return Math.max(1, value.split('\n').length);
@@ -226,21 +369,181 @@ export default function AnalyzeFilePage() {
   const handleSaveFile = async () => {
     if (!fileState.data?.path || !fileState.data?.sha) return;
 
-    await dispatch(
-      saveRepositoryFile({
-        path: fileState.data.path,
-        content: editorValue,
-        sha: fileState.data.sha,
-        message: `Update ${fileState.data.path} via PolyGlot editor`,
-      }),
-    );
+    const baseBranch = selectedRepository.defaultBranch || selectedRepository.branch || 'main';
+    const existingOptions = createPrBranches.filter(Boolean);
+    const fallbackBase = existingOptions.includes(baseBranch) ? baseBranch : existingOptions[0] || baseBranch;
 
-    setIsEditing(false);
+    setProtectSaveState({
+      baseBranch: fallbackBase,
+      newBranchName: `protect-${buildBranchSlug(fileState.data.path)}-${Date.now()}`,
+      commitMessage: `Update ${fileState.data.path} via PolyGlot`,
+      isSubmitting: false,
+      error: '',
+    });
+    setIsProtectSaveModalOpen(true);
+    return;
+  };
+
+  const handleSubmitProtectedSave = async () => {
+    if (!selectedRepository || !selectedFilePath) return;
+
+    const currentContent = isEditing ? editorValue : fileState.data?.content || '';
+    const baseBranch = String(protectSaveState.baseBranch || '').trim() || selectedRepository.defaultBranch || selectedRepository.branch || 'main';
+    const newBranchName = String(protectSaveState.newBranchName || '').trim();
+
+    setProtectSaveState((prev) => ({ ...prev, isSubmitting: true, error: '' }));
+
+    try {
+      if (protectMain) {
+        if (!newBranchName) {
+          setProtectSaveState((prev) => ({ ...prev, isSubmitting: false, error: 'Choose a branch name before saving.' }));
+          return;
+        }
+
+        if (newBranchName.toLowerCase() === 'main') {
+          setProtectSaveState((prev) => ({ ...prev, isSubmitting: false, error: 'The new branch cannot be named main.' }));
+          return;
+        }
+
+        await dispatch(
+          saveProtectedBranch({
+            repository: selectedRepository,
+            path: selectedFilePath,
+            content: currentContent,
+            sha: fileState.data?.sha || undefined,
+            sourceBranch: newBranchName,
+            targetBranch: baseBranch,
+            commitMessage: protectSaveState.commitMessage,
+          }),
+        ).unwrap();
+      } else {
+        await dispatch(
+          saveProtectedBranch({
+            repository: selectedRepository,
+            path: selectedFilePath,
+            content: currentContent,
+            sha: fileState.data?.sha || undefined,
+            sourceBranch: newBranchName || `protect-${buildBranchSlug(selectedFilePath)}-${Date.now()}`,
+            targetBranch: baseBranch,
+            commitMessage: protectSaveState.commitMessage || `Update ${selectedFilePath} via PolyGlot editor`,
+          }),
+        ).unwrap();
+      }
+
+      setIsProtectSaveModalOpen(false);
+      setIsEditing(false);
+    } catch (err) {
+      setProtectSaveState((prev) => ({
+        ...prev,
+        isSubmitting: false,
+        error: err?.message || 'Failed to save to a protected branch.',
+      }));
+    }
+  };
+
+  const handleCreatePR = async () => {
+    if (!selectedRepository || !selectedFilePath) return;
+
+    const defaultTarget = selectedRepository.defaultBranch || selectedRepository.branch || 'main';
+    const sanitizedName = buildBranchSlug(selectedFilePath);
+    const sourceBranch = `${defaultTarget}-polyglot-${sanitizedName}`;
+
+    setCreatePrState({
+      sourceBranch,
+      targetBranch: defaultTarget,
+      commitMessage: `Update ${selectedFilePath} via PolyGlot`,
+      prTitle: `Update ${selectedFilePath}`,
+      prBody: `This PR updates ${selectedFilePath} via PolyGlot.\n\n- Source branch: ${sourceBranch}\n- Target branch: ${defaultTarget}`,
+      isSubmitting: false,
+      error: '',
+    });
+    setIsCreatePrModalOpen(true);
+  };
+
+  const handleSubmitCreatePR = async () => {
+    if (!selectedRepository || !selectedFilePath) return;
+
+    const currentContent = isEditing ? editorValue : fileState.data?.content || '';
+    const sourceBranch = String(createPrState.sourceBranch || '').trim();
+    const targetBranch = String(createPrState.targetBranch || '').trim() || selectedRepository.defaultBranch || selectedRepository.branch || 'main';
+
+    if (!sourceBranch) {
+      setCreatePrState((prev) => ({ ...prev, isSubmitting: false, error: 'Choose a source branch for the PR.' }));
+      return;
+    }
+
+    if (sourceBranch === 'main' || sourceBranch === targetBranch && sourceBranch === 'main') {
+      setCreatePrState((prev) => ({ ...prev, isSubmitting: false, error: 'Committing to the main branch is not allowed.' }));
+      return;
+    }
+
+    setCreatePrState((prev) => ({ ...prev, isSubmitting: true, error: '' }));
+
+    try {
+      const result = await dispatch(
+        commitFile({
+          repository: selectedRepository,
+          path: selectedFilePath,
+          content: currentContent,
+          sha: fileState.data?.sha || undefined,
+          sourceBranch,
+          targetBranch,
+          commitMessage: createPrState.commitMessage,
+          prTitle: createPrState.prTitle,
+          prBody: createPrState.prBody,
+        }),
+      ).unwrap();
+
+      setIsCreatePrModalOpen(false);
+      if (result && result.prUrl) {
+        window.open(result.prUrl, '_blank');
+      }
+    } catch (err) {
+      setCreatePrState((prev) => ({
+        ...prev,
+        isSubmitting: false,
+        error: err?.message || 'Failed to create PR.',
+      }));
+    }
   };
 
 
 
   const backToExplorer = `/analyze/${encodeURIComponent(routeDirectory)}?path=${encodeURIComponent(currentPath)}`;
+
+  const createPrSourceBranchOptions = useMemo(() => {
+    const currentTarget = String(createPrState.targetBranch || '').trim();
+    const branchOptions = createPrBranches.filter((branch) => branch && branch !== 'main' && branch !== currentTarget);
+    const currentSource = String(createPrState.sourceBranch || '').trim();
+
+    if (currentSource && !branchOptions.includes(currentSource)) {
+      return [currentSource, ...branchOptions];
+    }
+
+    return branchOptions;
+  }, [createPrBranches, createPrState.sourceBranch, createPrState.targetBranch]);
+
+  const createPrTargetBranchOptions = useMemo(() => {
+    const branchOptions = createPrBranches.filter(Boolean);
+    const currentTarget = String(createPrState.targetBranch || '').trim();
+
+    if (currentTarget && !branchOptions.includes(currentTarget)) {
+      return [currentTarget, ...branchOptions];
+    }
+
+    return branchOptions;
+  }, [createPrBranches, createPrState.targetBranch]);
+
+  const protectSaveBaseBranchOptions = useMemo(() => {
+    const branchOptions = createPrBranches.filter(Boolean);
+    const currentBase = String(protectSaveState.baseBranch || '').trim();
+
+    if (currentBase && !branchOptions.includes(currentBase)) {
+      return [currentBase, ...branchOptions];
+    }
+
+    return branchOptions;
+  }, [createPrBranches, protectSaveState.baseBranch]);
 
   const aiGraph = useMemo(() => {
     const graphObject = graphData?.graph;
@@ -307,6 +610,49 @@ export default function AnalyzeFilePage() {
     const safeOffset = Math.max(0, Math.min(String(value || '').length, offset));
     const upToOffset = String(value || '').slice(0, safeOffset);
     return upToOffset.split('\n').length;
+  };
+
+  const getOffsetsForLineRange = (lineStart, lineEnd) => {
+    const raw = String(fileState.data?.content || '');
+    const lines = raw.split('\n');
+    const maxLine = Math.max(1, lines.length);
+    const startLine = Math.max(1, Math.min(maxLine, Number(lineStart) || 1));
+    const endLine = Math.max(startLine, Math.min(maxLine, Number(lineEnd) || startLine));
+
+    let start = 0;
+    for (let i = 0; i < startLine - 1; i += 1) start += lines[i].length + 1;
+
+    let end = start;
+    for (let i = startLine - 1; i < endLine; i += 1) {
+      end += lines[i].length;
+      if (i < endLine - 1) end += 1; // newline
+    }
+
+    return {
+      start,
+      end,
+      text: raw.slice(start, end),
+    };
+  };
+
+  const handleLineSelectionClick = (lineStart, lineEnd, event) => {
+    const offsets = getOffsetsForLineRange(lineStart, lineEnd);
+    if (!offsets || offsets.end <= offsets.start) {
+      triggerSnippetAnalysis({ snippet: '', lineStart: null, lineEnd: null, shouldAnalyze: false });
+      return;
+    }
+
+    const clientX = event?.clientX || 0;
+    const clientY = event?.clientY || 0;
+    updateSnippetPopoverAnchor({ x: clientX + 12, y: clientY - 12, visible: true });
+
+    triggerSnippetAnalysis({
+      snippet: offsets.text,
+      lineStart,
+      lineEnd,
+      shouldAnalyze: isAutoSnippetAnalyze,
+      triggerSource: isAutoSnippetAnalyze ? 'auto' : 'manual-ready',
+    });
   };
 
   const openSnippetDrawer = () => {
@@ -438,15 +784,28 @@ export default function AnalyzeFilePage() {
           lineEnd,
           signal: controller.signal,
         });
-
         if (controller.signal.aborted) return;
+
+        // Attempt to fetch line-level impact from the graph API (returns impacted nodes with line ranges)
+        let impactData = null;
+        try {
+          const impactResp = await fetch(
+            `/api/graph/${encodeURIComponent(analysisJobId)}/impact?node=${encodeURIComponent(selectedFilePath)}&hops=3`,
+            { method: 'GET', credentials: 'include' },
+          );
+          if (impactResp.ok) {
+            impactData = await impactResp.json();
+          }
+        } catch (e) {
+          // best-effort; ignore
+        }
 
         setSnippetState({
           status: 'succeeded',
           error: '',
           notice: '',
           ...basePayload,
-          data: result,
+          data: { ...result, impactedNodes: (impactData && impactData.impactedNodes) || null },
         });
         if (!isSnippetPopoverPinned) {
           setSnippetPopoverAnchor((prev) => ({ ...prev, visible: true }));
@@ -611,23 +970,8 @@ export default function AnalyzeFilePage() {
     <div className={compact ? 'space-y-2 text-[11px]' : 'space-y-3 text-xs'}>
       {snippetState.data?.whatItDoes && (
         <div>
-          <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
-            What It Does
-          </p>
-          <p className="text-foreground/90 whitespace-pre-wrap leading-relaxed">
-            {snippetState.data.whatItDoes}
-          </p>
-        </div>
-      )}
-
-      {snippetState.data?.fileImpact && !compact && (
-        <div>
-          <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
-            File Impact
-          </p>
-          <p className="text-foreground/90 whitespace-pre-wrap leading-relaxed">
-            {snippetState.data.fileImpact}
-          </p>
+          <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">What It Does</p>
+          <p className="text-foreground/90 whitespace-pre-wrap leading-relaxed">{snippetState.data.fileImpact}</p>
         </div>
       )}
 
@@ -658,16 +1002,24 @@ export default function AnalyzeFilePage() {
       )}
 
       {!compact &&
-        Array.isArray(snippetState.data?.directlyImpactedFiles) &&
-        snippetState.data.directlyImpactedFiles.length > 0 && (
+        Array.isArray(snippetState.data?.impactedNodes) &&
+        snippetState.data.impactedNodes.length > 0 && (
           <div>
             <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
-              Directly Impacted Files ({snippetState.data.directlyImpactedFiles.length})
+              Impacted Locations ({snippetState.data.impactedNodes.length})
             </p>
             <ul className="space-y-1">
-              {snippetState.data.directlyImpactedFiles.slice(0, 8).map((file) => (
-                <li key={`direct-${file}`} className="font-mono text-foreground/90 break-all">
-                  {file}
+              {snippetState.data.impactedNodes.slice(0, 12).map((node, idx) => (
+                <li key={`impact-${idx}`} className="font-mono text-foreground/90 break-all">
+                  <div className="flex items-baseline gap-2">
+                    <span className="truncate">{node.path || node.filePath || node}</span>
+                    {node.lines?.source && (
+                      <span className="text-xs text-muted-foreground">lines {node.lines.source[0]}-{node.lines.source[1]}</span>
+                    )}
+                    {node.lines?.target && (
+                      <span className="text-xs text-muted-foreground">(target lines {node.lines.target[0]}-{node.lines.target[1]})</span>
+                    )}
+                  </div>
                 </li>
               ))}
             </ul>
@@ -726,6 +1078,15 @@ export default function AnalyzeFilePage() {
                 <ExternalLink className="size-3.5" />
               </a>
             )}
+            <div className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-background/55 px-3 py-1.5">
+              <span className="text-[11px] font-semibold tracking-[0.14em] text-muted-foreground">Protect main</span>
+              <ProtectMainToggle
+                id="protect-main-toolbar-toggle"
+                checked={protectMain}
+                onChange={setProtectMain}
+                className="scale-90"
+              />
+            </div>
           </div>
         )}
       </header>
@@ -737,7 +1098,7 @@ export default function AnalyzeFilePage() {
       )}
 
       {selectedFilePath && (
-        <div className="mt-6 grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(21rem,1fr)]">
+        <div className="mt-6 grid items-start gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(21rem,1fr)]">
           <div className="rounded-2xl shadow-neu-inset border-none bg-background/40">
             <div className="flex items-center justify-between gap-3 border-b border-border/10 px-5 py-4">
               <div className="min-w-0">
@@ -749,7 +1110,7 @@ export default function AnalyzeFilePage() {
               </div>
 
               <div className="flex items-center gap-2">
-                <div className="hidden xl:flex items-center gap-2 rounded-xl border border-border/50 bg-background/55 p-1 shadow-neu-inset">
+                  <div className="hidden xl:flex items-center gap-2 rounded-xl border border-border/50 bg-background/55 p-1 shadow-neu-inset">
                   <div className="inline-flex items-center rounded-lg border border-border/60 bg-background/70 p-0.5">
                     <button
                       type="button"
@@ -771,6 +1132,41 @@ export default function AnalyzeFilePage() {
                     >
                       Manual
                     </button>
+                  </div>
+
+                  <div className="ml-2 inline-flex items-center gap-2 rounded-lg border border-border/60 bg-background/70 px-2 py-1">
+                    <label className="text-[10px] text-muted-foreground mr-1">Highlight</label>
+                    <select
+                      value={snippetState.highlightMode || 'none'}
+                      onChange={async (e) => {
+                        const mode = String(e.target.value || 'none');
+                        setSnippetState((s) => ({ ...s, highlightMode: mode }));
+
+                        if (!analysisJobId || !selectedFilePath) return;
+
+                        if (mode === 'none') return;
+
+                        try {
+                          const payload = await (await fetch(`/api/graph/${encodeURIComponent(analysisJobId)}`)).json();
+                          const edges = Array.isArray(payload?.edges) ? payload.edges : payload?.graph?.edges || [];
+                          const ranges = [];
+                          for (const edge of edges) {
+                            if (edge.source === selectedFilePath && (mode === 'imports' ? edge.edge_type === 'IMPORTS' : mode === 'calls' ? edge.edge_type === 'CALLS' : false)) {
+                              if (edge.source_lines) ranges.push(edge.source_lines);
+                              else if (edge.source_lines_json) ranges.push(edge.source_lines_json);
+                            }
+                          }
+                          setSnippetState((s) => ({ ...s, highlightRanges: ranges }));
+                        } catch {
+                          // ignore
+                        }
+                      }}
+                      className="text-xs bg-transparent"
+                    >
+                      <option value="none">None</option>
+                      <option value="imports">Imports</option>
+                      <option value="calls">Calls</option>
+                    </select>
                   </div>
 
                   <span className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground">
@@ -823,7 +1219,20 @@ export default function AnalyzeFilePage() {
                       className="rounded-xl bg-gold text-white shadow-md active-scale"
                     >
                       <Save className="size-3.5" />
-                      {fileState.saveStatus === 'loading' ? 'Saving...' : 'Save'}
+                      {fileState.saveStatus === 'loading'
+                        ? 'Saving...'
+                        : protectMain
+                          ? 'Save to Branch'
+                          : 'Save'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleCreatePR}
+                      disabled={!fileState.canEdit}
+                      className="rounded-xl ml-2 shadow-neu-inset border-none bg-background/50 active-scale"
+                    >
+                      Create PR
                     </Button>
                   </>
                 )}
@@ -855,13 +1264,12 @@ export default function AnalyzeFilePage() {
                       <textarea
                         ref={editorTextareaRef}
                         value={editorValue}
-                        onChange={(e) => setEditorValue(e.target.value)}
+                        onChange={(event) => setEditorValue(event.target.value)}
                         onSelect={handleTextareaSelection}
-                        onKeyUp={handleTextareaSelection}
                         onMouseUp={handleTextareaSelection}
+                        onKeyUp={handleTextareaSelection}
+                        className="min-w-max flex-1 resize-none bg-transparent px-3 py-3 font-mono text-xs leading-5 outline-none whitespace-pre overflow-auto text-foreground/90"
                         spellCheck={false}
-                        rows={editorLineCount}
-                        className="min-w-max flex-1 resize-none bg-transparent px-3 py-3 font-mono text-xs leading-5 outline-none whitespace-pre overflow-hidden text-foreground/90"
                       />
                     </div>
                   </div>
@@ -911,13 +1319,160 @@ export default function AnalyzeFilePage() {
             )}
           </div>
 
-          <div className="relative min-h-104 xl:justify-self-end xl:w-full xl:max-w-120">
+          <div className="relative h-fit self-start xl:justify-self-end xl:w-full xl:max-w-120">
             {hasNodeInsights ? (
-              <AiPanel
-                nodeId={selectedFilePath}
-                graph={aiGraph}
-                onClose={() => navigate(backToExplorer)}
-              />
+              <div className="space-y-4">
+                <AiPanel
+                  nodeId={selectedFilePath}
+                  graph={aiGraph}
+                  onClose={() => navigate(backToExplorer)}
+                />
+
+                {(showSnippetPopover || isSnippetDrawerOpen) && (
+                  <div className="space-y-4">
+                    {showSnippetPopover && (
+                      <div className="rounded-2xl border border-border/70 bg-background/95 p-3 shadow-xl backdrop-blur-sm">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                            Snippet Insight
+                          </p>
+                          <div className="flex items-center gap-1.5">
+                            <span className="rounded-md border border-border/60 bg-background/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                              {isAutoSnippetAnalyze ? 'Auto Analysis' : 'Manual Analysis'}
+                            </span>
+                            <span className="rounded-md border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                              Analysis
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSnippetPopoverAnchor((prev) => ({ ...prev, visible: false }))}
+                            className="rounded-md border border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                          >
+                            Close
+                          </button>
+                        </div>
+
+                        {snippetState.status === 'loading' && (
+                          <div className="mb-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+                            <Loader2 className="size-3.5 animate-spin" />
+                            {snippetState.data ? 'Updating analysis...' : 'Analyzing...'}
+                          </div>
+                        )}
+
+                        {quickSnippetSummary ? (
+                          <p className="text-xs leading-relaxed text-foreground/90">{quickSnippetSummary}</p>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">
+                            {snippetState.notice || 'Selection captured. Run analysis for impact details.'}
+                          </p>
+                        )}
+
+                        {snippetState.data && (
+                          <div className="mt-2">{renderSnippetImpactDetails({ compact: true })}</div>
+                        )}
+
+                        <div className="mt-3 flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={openSnippetDrawer}
+                            className="rounded-lg border border-border/60 bg-background/70 px-2.5 py-1 text-[10px] text-muted-foreground hover:text-foreground"
+                          >
+                            Open Full Impact
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsSnippetPopoverPinned((prev) => !prev)}
+                            className={`rounded-lg border px-2.5 py-1 text-[10px] ${isSnippetPopoverPinned
+                                ? 'border-primary/40 bg-primary/10 text-primary'
+                                : 'border-border/60 bg-background/70 text-muted-foreground hover:text-foreground'
+                              }`}
+                          >
+                            {isSnippetPopoverPinned ? 'Unpin' : 'Pin'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {isSnippetDrawerOpen && (
+                      <div
+                        ref={snippetPanelRef}
+                        tabIndex={-1}
+                        className="rounded-2xl border border-border/70 bg-background/95 p-4 shadow-2xl backdrop-blur-sm outline-none"
+                      >
+                        <div className="mb-3 flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                              Snippet Impact
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {snippetState.lineStart && snippetState.lineEnd
+                                ? `Lines ${snippetState.lineStart}-${snippetState.lineEnd}`
+                                : 'Select a snippet to inspect impact'}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setIsSnippetPopoverPinned((prev) => !prev)}
+                              className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[10px] transition-colors ${isSnippetPopoverPinned
+                                  ? 'border-primary/40 bg-primary/10 text-primary'
+                                  : 'border-border/60 bg-background/70 text-muted-foreground hover:text-foreground'
+                                }`}
+                            >
+                              <Pin className="size-3" />
+                              {isSnippetPopoverPinned ? 'Pinned' : 'Pin'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setIsSnippetDrawerOpen(false)}
+                              className="inline-flex items-center rounded-lg border border-border/60 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground"
+                            >
+                              <X className="size-3" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-3 max-h-[60vh] overflow-auto pr-1 custom-scrollbar">
+                          {snippetState.selectedSnippet ? (
+                            <pre className="max-h-32 overflow-auto rounded-lg border border-border/60 bg-background/80 px-2 py-2 font-mono text-[11px] leading-5 text-foreground/90 custom-scrollbar">
+                              {snippetState.selectedSnippet}
+                            </pre>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              Select a meaningful snippet to view purpose and impact insights.
+                            </p>
+                          )}
+
+                          {snippetState.notice && (
+                            <p className="rounded-lg border border-border/60 bg-background/70 px-2 py-2 text-xs text-muted-foreground">
+                              {snippetState.notice}
+                            </p>
+                          )}
+
+                          {snippetState.status === 'loading' && (
+                            <div className="rounded-lg border border-border/60 bg-background/70 px-2 py-2 text-xs text-muted-foreground">
+                              <div className="flex items-center gap-2">
+                                <Loader2 className="size-3.5 animate-spin" />
+                                {snippetState.data ? 'Updating analysis...' : 'Analyzing snippet impact...'}
+                              </div>
+                            </div>
+                          )}
+
+                          {snippetState.status === 'failed' && snippetState.error && (
+                            <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-2 py-2 text-xs text-destructive">
+                              <AlertTriangle className="mt-0.5 size-3.5" />
+                              <span>{snippetState.error}</span>
+                            </div>
+                          )}
+
+                          {snippetState.data && renderSnippetImpactDetails()}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="rounded-xl border border-border/50 bg-background/40 p-3 text-xs text-muted-foreground">
                 Insight panel is available after graph data is loaded for this repository/job.
@@ -927,212 +1482,256 @@ export default function AnalyzeFilePage() {
         </div>
       )}
 
-      {isSnippetDrawerOpen && (
-        <div className="fixed right-4 top-24 z-40 hidden w-104 max-w-[calc(100vw-2rem)] xl:block animate-in fade-in slide-in-from-right-2 duration-200">
-          <div
-            ref={snippetPanelRef}
-            tabIndex={-1}
-            className="rounded-2xl border border-border/70 bg-background/95 p-4 shadow-2xl backdrop-blur-sm outline-none animate-in zoom-in-95 duration-200"
-          >
-            <div className="mb-3 flex items-center justify-between gap-2">
+      {isProtectSaveModalOpen && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-background/70 px-4 py-6 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-2xl border border-border/70 bg-background p-5 shadow-2xl">
+            <div className="mb-4 flex items-start justify-between gap-4">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
-                  Snippet Impact
+                  Protect main
                 </p>
-                <p className="text-xs text-muted-foreground">
-                  {snippetState.lineStart && snippetState.lineEnd
-                    ? `Lines ${snippetState.lineStart}-${snippetState.lineEnd}`
-                    : 'Select a snippet to inspect impact'}
+                <p className="text-sm text-muted-foreground">
+                  {protectMain
+                    ? 'Create a branch first, then commit the current file to that branch.'
+                    : `Protect main is off. Turning it on will create a new branch first. Otherwise, this will commit directly to ${selectedRepository?.branch || selectedRepository?.defaultBranch || 'the current branch'}.`}
                 </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsSnippetPopoverPinned((prev) => !prev)}
-                  className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[10px] transition-colors ${isSnippetPopoverPinned
-                      ? 'border-primary/40 bg-primary/10 text-primary'
-                      : 'border-border/60 bg-background/70 text-muted-foreground hover:text-foreground'
-                    }`}
-                >
-                  <Pin className="size-3" />
-                  {isSnippetPopoverPinned ? 'Pinned' : 'Pin'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsSnippetDrawerOpen(false)}
-                  className="inline-flex items-center rounded-lg border border-border/60 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground"
-                >
-                  <X className="size-3" />
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-3 max-h-[70vh] overflow-auto pr-1 custom-scrollbar">
-              {snippetState.selectedSnippet ? (
-                <pre className="max-h-32 overflow-auto rounded-lg border border-border/60 bg-background/80 px-2 py-2 font-mono text-[11px] leading-5 text-foreground/90 custom-scrollbar">
-                  {snippetState.selectedSnippet}
-                </pre>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Select a meaningful snippet to view purpose and impact insights.
-                </p>
-              )}
-
-              {snippetState.notice && (
-                <p className="rounded-lg border border-border/60 bg-background/70 px-2 py-2 text-xs text-muted-foreground">
-                  {snippetState.notice}
-                </p>
-              )}
-
-              {snippetState.status === 'loading' && (
-                <div className="rounded-lg border border-border/60 bg-background/70 px-2 py-2 text-xs text-muted-foreground">
-                  <div className="flex items-center gap-2">
-                    <Loader2 className="size-3.5 animate-spin" />
-                    {snippetState.data ? 'Updating analysis...' : 'Analyzing snippet impact...'}
-                  </div>
-                </div>
-              )}
-
-              {snippetState.status === 'failed' && snippetState.error && (
-                <div className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-2 py-2 text-xs text-destructive">
-                  <AlertTriangle className="mt-0.5 size-3.5" />
-                  <span>{snippetState.error}</span>
-                </div>
-              )}
-
-              {snippetState.data && renderSnippetImpactDetails()}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showSnippetPopover && (
-        <div
-          className="pointer-events-none fixed z-50 hidden w-88 max-w-[calc(100vw-2rem)] origin-top-left xl:block animate-in fade-in zoom-in-95 slide-in-from-top-1 duration-200"
-          style={{
-            left: `${snippetPopoverAnchor.x}px`,
-            top: `${snippetPopoverAnchor.y}px`,
-          }}
-        >
-          <div className="pointer-events-auto rounded-2xl border border-border/70 bg-background/95 p-3 shadow-2xl backdrop-blur-sm">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
-                Snippet Insight
-              </p>
-              <div className="flex items-center gap-1.5">
-                <span className="rounded-md border border-border/60 bg-background/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                  {isAutoSnippetAnalyze ? 'Auto Analysis' : 'Manual Analysis'}
-                </span>
-                <span className="rounded-md border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
-                  Analysis
-                </span>
               </div>
               <button
                 type="button"
-                onClick={() => setSnippetPopoverAnchor((prev) => ({ ...prev, visible: false }))}
-                className="rounded-md border border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                onClick={() => setIsProtectSaveModalOpen(false)}
+                className="rounded-md border border-border/60 px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground"
               >
                 Close
               </button>
             </div>
 
-            {snippetState.status === 'loading' && (
-              <div className="mb-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" />
-                {snippetState.data ? 'Updating analysis...' : 'Analyzing...'}
+            <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/70 px-3 py-2">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                  Protect main toggle
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {protectMain ? 'Branch protection is enabled.' : 'Branch protection is disabled.'}
+                </p>
               </div>
-            )}
+              <ProtectMainToggle
+                id="protect-main-modal-toggle"
+                checked={protectMain}
+                onChange={setProtectMain}
+              />
+            </div>
 
-            {quickSnippetSummary ? (
-              <p className="text-xs leading-relaxed text-foreground/90">{quickSnippetSummary}</p>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                {snippetState.notice || 'Selection captured. Run analysis for impact details.'}
+            <div className="grid gap-4 md:grid-cols-2">
+              {protectMain ? (
+                <>
+                  <label className="space-y-1 text-sm">
+                    <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                      Base branch
+                    </span>
+                    <select
+                      value={protectSaveState.baseBranch}
+                      onChange={(event) => setProtectSaveState((prev) => ({ ...prev, baseBranch: event.target.value }))}
+                      className="w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
+                      disabled={createPrBranchesLoading}
+                    >
+                      {(protectSaveBaseBranchOptions.length > 0 ? protectSaveBaseBranchOptions : [selectedRepository?.defaultBranch || selectedRepository?.branch || 'main'])
+                        .filter(Boolean)
+                        .map((branch) => (
+                          <option key={branch} value={branch}>
+                            {branch}
+                          </option>
+                        ))}
+                    </select>
+                    <p className="text-[11px] text-muted-foreground">This branch will be used as the base for the new protected save branch.</p>
+                    {createPrBranchesError && <p className="text-xs text-muted-foreground">{createPrBranchesError}</p>}
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                      New branch name
+                    </span>
+                    <input
+                      value={protectSaveState.newBranchName}
+                      onChange={(event) => setProtectSaveState((prev) => ({ ...prev, newBranchName: event.target.value }))}
+                      className="w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
+                    />
+                    <p className="text-[11px] text-muted-foreground">The commit will land on this new branch, not on main.</p>
+                  </label>
+                </>
+              ) : (
+                <div className="md:col-span-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700">
+                  Protect main is off. Turning it on will create a branch before saving. If you continue, the change will commit directly to the current branch.
+                </div>
+              )}
+
+              <label className="space-y-1 text-sm md:col-span-2">
+                <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                  Commit message
+                </span>
+                <input
+                  value={protectSaveState.commitMessage}
+                  onChange={(event) => setProtectSaveState((prev) => ({ ...prev, commitMessage: event.target.value }))}
+                  className="w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
+                />
+              </label>
+            </div>
+
+            {protectSaveState.error && (
+              <p className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {protectSaveState.error}
               </p>
             )}
 
-            {snippetState.data && (
-              <div className="mt-2">{renderSnippetImpactDetails({ compact: true })}</div>
-            )}
-
-            <div className="mt-3 flex items-center justify-between gap-2">
-              <button
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
                 type="button"
-                onClick={openSnippetDrawer}
-                className="rounded-lg border border-border/60 bg-background/70 px-2.5 py-1 text-[10px] text-muted-foreground hover:text-foreground"
+                variant="outline"
+                onClick={() => setIsProtectSaveModalOpen(false)}
+                className="rounded-xl"
+                disabled={protectSaveState.isSubmitting}
               >
-                Open Full Impact
-              </button>
-              <button
+                Cancel
+              </Button>
+              <Button
                 type="button"
-                onClick={() => setIsSnippetPopoverPinned((prev) => !prev)}
-                className={`rounded-lg border px-2.5 py-1 text-[10px] ${isSnippetPopoverPinned
-                    ? 'border-primary/40 bg-primary/10 text-primary'
-                    : 'border-border/60 bg-background/70 text-muted-foreground hover:text-foreground'
-                  }`}
+                onClick={handleSubmitProtectedSave}
+                className="rounded-xl bg-gold text-white"
+                disabled={protectSaveState.isSubmitting}
               >
-                {isSnippetPopoverPinned ? 'Unpin' : 'Pin'}
-              </button>
+                {protectSaveState.isSubmitting ? 'Saving...' : 'Save Branch'}
+              </Button>
             </div>
           </div>
         </div>
       )}
 
-      <div className="fixed bottom-4 right-4 z-40 xl:hidden">
-        <Button
-          type="button"
-          onClick={() => setIsMobileSnippetSheetOpen((prev) => !prev)}
-          className="rounded-xl bg-background/95 px-3 text-xs text-foreground shadow-xl"
-          variant="outline"
-        >
-          {isMobileSnippetSheetOpen ? 'Hide Snippet Impact' : 'Snippet Impact'}
-        </Button>
-      </div>
+      {isCreatePrModalOpen && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-background/70 px-4 py-6 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-2xl border border-border/70 bg-background p-5 shadow-2xl">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                  Create PR
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Commit the current file to a branch and open a pull request.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreatePrModalOpen(false)}
+                className="rounded-md border border-border/60 px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                Close
+              </button>
+            </div>
 
-      {isMobileSnippetSheetOpen && (
-        <div className="fixed inset-x-3 bottom-16 z-40 rounded-2xl border border-border/70 bg-background/95 p-3 shadow-2xl xl:hidden">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
-              Snippet Impact
-            </p>
-            <button
-              type="button"
-              onClick={() => setIsMobileSnippetSheetOpen(false)}
-              className="rounded-md border border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
-            >
-              Close
-            </button>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="space-y-1 text-sm">
+                <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                  From branch
+                </span>
+                <select
+                  value={createPrState.sourceBranch}
+                  onChange={(event) => setCreatePrState((prev) => ({ ...prev, sourceBranch: event.target.value }))}
+                  className="w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
+                  disabled={createPrBranchesLoading}
+                >
+                  {(createPrSourceBranchOptions.length > 0 ? createPrSourceBranchOptions : [`${selectedRepository?.defaultBranch || selectedRepository?.branch || 'main'}-polyglot`])
+                    .filter(Boolean)
+                    .map((branch) => (
+                      <option key={branch} value={branch}>
+                        {branch}
+                      </option>
+                    ))}
+                </select>
+                <p className="text-[11px] text-muted-foreground">This branch will receive the commit and become the PR head.</p>
+                {createPrBranchesError && (
+                  <p className="text-xs text-muted-foreground">{createPrBranchesError}</p>
+                )}
+              </label>
+
+              <label className="space-y-1 text-sm">
+                <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                  To branch
+                </span>
+                <select
+                  value={createPrState.targetBranch}
+                  onChange={(event) => setCreatePrState((prev) => ({ ...prev, targetBranch: event.target.value }))}
+                  className="w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
+                  disabled={createPrBranchesLoading}
+                >
+                  {(createPrTargetBranchOptions.length > 0 ? createPrTargetBranchOptions : [selectedRepository?.defaultBranch || selectedRepository?.branch || 'main'])
+                    .filter(Boolean)
+                    .map((branch) => (
+                      <option key={branch} value={branch}>
+                        {branch}
+                      </option>
+                    ))}
+                </select>
+                <p className="text-[11px] text-muted-foreground">The PR will target this branch.</p>
+              </label>
+
+              <label className="space-y-1 text-sm md:col-span-2">
+                <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                  Commit message
+                </span>
+                <input
+                  value={createPrState.commitMessage}
+                  onChange={(event) => setCreatePrState((prev) => ({ ...prev, commitMessage: event.target.value }))}
+                  className="w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
+                />
+              </label>
+
+              <label className="space-y-1 text-sm md:col-span-2">
+                <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                  PR title
+                </span>
+                <input
+                  value={createPrState.prTitle}
+                  onChange={(event) => setCreatePrState((prev) => ({ ...prev, prTitle: event.target.value }))}
+                  className="w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
+                />
+              </label>
+
+              <label className="space-y-1 text-sm md:col-span-2">
+                <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                  PR body
+                </span>
+                <textarea
+                  value={createPrState.prBody}
+                  onChange={(event) => setCreatePrState((prev) => ({ ...prev, prBody: event.target.value }))}
+                  className="min-h-32 w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
+                />
+              </label>
+            </div>
+
+            {createPrState.error && (
+              <p className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {createPrState.error}
+              </p>
+            )}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsCreatePrModalOpen(false)}
+                className="rounded-xl"
+                disabled={createPrState.isSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={handleSubmitCreatePR}
+                className="rounded-xl bg-gold text-white"
+                disabled={createPrState.isSubmitting}
+              >
+                {createPrState.isSubmitting ? 'Creating...' : 'Create PR'}
+              </Button>
+            </div>
           </div>
-
-          {snippetState.selectedSnippet ? (
-            <pre className="mb-2 max-h-24 overflow-auto rounded-lg border border-border/60 bg-background/80 px-2 py-2 font-mono text-[10px] leading-4 text-foreground/90 custom-scrollbar">
-              {snippetState.selectedSnippet}
-            </pre>
-          ) : (
-            <p className="text-xs text-muted-foreground">Select a snippet to open impact details.</p>
-          )}
-
-          {snippetState.notice && (
-            <p className="mb-2 rounded-lg border border-border/60 bg-background/70 px-2 py-2 text-xs text-muted-foreground">
-              {snippetState.notice}
-            </p>
-          )}
-
-          {snippetState.status === 'loading' && (
-            <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="size-3.5 animate-spin" />
-              {snippetState.data ? 'Updating analysis...' : 'Analyzing snippet impact...'}
-            </div>
-          )}
-
-          {snippetState.status === 'failed' && snippetState.error && (
-            <div className="mb-2 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-2 py-2 text-xs text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5" />
-              <span>{snippetState.error}</span>
-            </div>
-          )}
-
-          {snippetState.data && renderSnippetImpactDetails({ compact: true })}
         </div>
       )}
     </section>

@@ -72,9 +72,10 @@ export function startCacheMetricsPersistence() {
 
   metricsPersisteInterval = setInterval(() => {
     const snapshot = getCacheMetricsSnapshot();
-    persistCacheMetricsSnapshot(snapshot).catch((err) => {
+    persistCacheMetricsSnapshot(snapshot).catch(async (err) => {
       // Should be caught inside persistCacheMetricsSnapshot, but log if not
-      console.error('[cache-metrics] Unexpected persistence error:', err?.message);
+      const { logger } = await import('../utils/logger.js');
+      logger.error('[cache-metrics] Unexpected persistence error:', err?.message);
     });
   }, PERSISTENCE_INTERVAL_MS);
 
@@ -107,7 +108,10 @@ function logCacheWarning(operation, error, context = {}) {
     .map(([key, value]) => `${key}=${value}`)
     .join(' ');
   const suffix = details ? ` ${details}` : '';
-  console.warn(`[cache:${operation}] ${error?.message || 'Cache operation failed.'}${suffix}`);
+  (async () => {
+    const { logger } = await import('../utils/logger.js');
+    logger.warn(`[cache:${operation}] ${error?.message || 'Cache operation failed.'}${suffix}`);
+  })();
 }
 
 export function buildAnalysisHistoryCacheKey({ userId, page, limit }) {

@@ -34,7 +34,6 @@
 
   .dark {
     --background: 15 15 15;
-    /* Deep Black */
     --foreground: 241 245 249;
     --card: 15 15 15;
     --card-foreground: 241 245 249;
@@ -52,6 +51,17 @@
     --input: 15 15 15;
     --ring: 212 175 55;
     --auth-panel: 11 11 11;
+
+    /* Override the generated Tailwind --color-* variables explicitly */
+    --color-background: rgb(15 15 15);
+    --color-foreground: rgb(241 245 249);
+    --color-card: rgb(15 15 15);
+    --color-card-foreground: rgb(241 245 249);
+    --color-primary: rgb(212 175 55);
+    --color-primary-foreground: rgb(15 15 15);
+    --color-muted: rgb(38 38 38);
+    --color-muted-foreground: rgb(148 163 184);
+    --color-border: rgb(38 38 38);
   }
 }
 

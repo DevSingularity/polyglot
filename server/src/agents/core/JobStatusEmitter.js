@@ -1,3 +1,5 @@
+import { logger } from '../../utils/logger.js';
+
 export class JobStatusEmitter {
 	constructor(redis, options = {}) {
 		this.redis = redis;
@@ -10,12 +12,12 @@ export class JobStatusEmitter {
 
 	async emit(jobId, payload = {}) {
 		if (!jobId) {
-			console.warn('[JobStatusEmitter] Missing jobId; skipping publish');
+			logger.warn('[JobStatusEmitter] Missing jobId; skipping publish');
 			return 0;
 		}
 
 		if (!this.redis || typeof this.redis.publish !== 'function') {
-			console.warn('[JobStatusEmitter] No Redis client configured; skipping publish');
+			logger.warn('[JobStatusEmitter] No Redis client configured; skipping publish');
 			return 0;
 		}
 
@@ -28,7 +30,7 @@ export class JobStatusEmitter {
 		try {
 			return await this.redis.publish(this.channel(jobId), JSON.stringify(message));
 		} catch (error) {
-			console.error('[JobStatusEmitter] Failed to publish job status:', error.message);
+			logger.error('[JobStatusEmitter] Failed to publish job status:', error.message);
 			return 0;
 		}
 	}

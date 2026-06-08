@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { getNeo4jDriver } from './neo4jDriver.js';
+import { logger } from '../../utils/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '../../../.env') });
@@ -90,7 +91,7 @@ export async function runMigrations() {
   const session = driver.session();
 
   try {
-    console.log('[Neo4jMigration] Starting migration run...');
+    logger.info('[Neo4jMigration] Starting migration run...');
     await ensureMigrationConstraint(session);
 
     const applied = await getAppliedMigrations(session);
@@ -107,7 +108,7 @@ export async function runMigrations() {
       .sort(); // lexicographic sort preserves V001 < V002 < V003 order
 
     if (files.length === 0) {
-      console.log('[Neo4jMigration] No .cypher migration files found.');
+      logger.info('[Neo4jMigration] No .cypher migration files found.');
       return;
     }
 
@@ -115,16 +116,16 @@ export async function runMigrations() {
       const version = filename.split('__')[0]; // "V001" from "V001__initial_schema.cypher"
 
       if (applied.has(version)) {
-        console.log(`[Neo4jMigration] Skipping ${filename} (already applied)`);
+        logger.info(`[Neo4jMigration] Skipping ${filename} (already applied)`);
         continue;
       }
 
-      console.log(`[Neo4jMigration] Applying ${filename}...`);
+      logger.info(`[Neo4jMigration] Applying ${filename}...`);
       const cypher = await fs.readFile(path.join(MIGRATIONS_DIR, filename), 'utf8');
       const stmts = splitStatements(cypher);
 
       if (stmts.length === 0) {
-        console.warn(`[Neo4jMigration] ${filename} produced no executable statements — skipping`);
+        logger.warn(`[Neo4jMigration] ${filename} produced no executable statements — skipping`);
         continue;
       }
 
@@ -137,21 +138,21 @@ export async function runMigrations() {
             err.message?.includes('already exists') ||
             err.message?.includes('EquivalentSchemaRuleAlreadyExists')
           ) {
-            console.log(`[Neo4jMigration]   (idempotent skip) ${err.message.split('\n')[0]}`);
+            logger.info(`[Neo4jMigration]   (idempotent skip) ${err.message.split('\n')[0]}`);
           } else {
-            console.error(`[Neo4jMigration] Failed statement in ${filename}:`, err.message);
+            logger.error(`[Neo4jMigration] Failed statement in ${filename}:`, err.message);
             throw err;
           }
         }
       }
 
       await markApplied(session, version, filename);
-      console.log(`[Neo4jMigration] Successfully applied ${filename}`);
+      logger.info(`[Neo4jMigration] Successfully applied ${filename}`);
     }
 
-    console.log('[Neo4jMigration] All migrations completed.');
+    logger.info('[Neo4jMigration] All migrations completed.');
   } catch (err) {
-    console.error('[Neo4jMigration] Migration run failed:', err.message);
+    logger.error('[Neo4jMigration] Migration run failed:', err.message);
     throw err;
   } finally {
     await session.close();

@@ -1,11 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { X, AlertTriangle, Loader2, Zap, Wrench } from 'lucide-react';
+import ChatInput from './ChatInput';
+import ChatThread from './ChatThread';
 import {
   analyzeImpact,
   resetAiState,
   selectAiImpactState,
 } from '../slices/aiSlice';
+import { initConversation } from '../slices/conversationSlice';
 import { selectGraphData } from '../../graph/slices/graphSlice';
 import { aiService } from '../services/aiService';
 
@@ -31,13 +34,343 @@ function friendlyErrorMessage(rawMessage) {
   return msg;
 }
 
+function buildLocalExplanation({ nodeId, type, summary, declarations, deps, usedBy }) {
+  const exportCount = Array.isArray(declarations) ? declarations.length : 0;
+  const importCount = Array.isArray(deps) ? deps.length : 0;
+  const usedByCount = Array.isArray(usedBy) ? usedBy.length : 0;
+
+  const parts = [
+    `${nodeId} is a ${type || 'repository'} node.`,
+    exportCount > 0
+      ? `It exposes ${exportCount} export${exportCount === 1 ? '' : 's'} and imports ${importCount} module${importCount === 1 ? '' : 's'}.`
+      : `It imports ${importCount} module${importCount === 1 ? '' : 's'} and is referenced by ${usedByCount} file${usedByCount === 1 ? '' : 's'}.`,
+  ];
+
+  if (summary) {
+    parts.push(`Summary: ${summary}`);
+  }
+
+  if (usedByCount > 0) {
+    parts.push(`It is used by ${usedByCount} file${usedByCount === 1 ? '' : 's'}, so changes here can have wide impact.`);
+  }
+
+  return parts.join(' ');
+}
+
+function buildLocalRefactorSuggestion({ type, summary, declarations, deps, usedBy }) {
+  const concerns = [];
+  const suggestions = [];
+  const exportCount = Array.isArray(declarations) ? declarations.length : 0;
+  const importCount = Array.isArray(deps) ? deps.length : 0;
+  const usedByCount = Array.isArray(usedBy) ? usedBy.length : 0;
+
+  if (usedByCount > 8) {
+    concerns.push('This file has a high fan-in, so changes can ripple across many dependents.');
+    suggestions.push('Split high-impact responsibilities into smaller units with clearer boundaries.');
+  }
+
+  if (importCount > 8) {
+    concerns.push('The file has a large dependency surface, which can make it harder to test and reuse.');
+    suggestions.push('Extract shared helpers or adapters to reduce direct coupling.');
+  }
+
+  if (exportCount > 6) {
+    concerns.push('The file exposes many exports, which can indicate mixed responsibilities.');
+    suggestions.push('Group related exports into focused modules and keep each file centered on one concern.');
+  }
+
+  if (String(type || '').toLowerCase() === 'service') {
+    suggestions.push('Keep orchestration thin and move parsing or transformation logic into reusable helpers.');
+  }
+
+  if (summary) {
+    suggestions.push(`Review the current summary and extract the parts that are most likely to change independently: ${summary}`);
+  }
+
+  return {
+    concerns: concerns.length > 0 ? concerns : ['No strong structural smell was detected from the static graph metadata alone.'],
+    suggestions: suggestions.length > 0 ? suggestions : ['Prefer smaller, testable functions and keep dependencies localized.'],
+    priority: usedByCount > 8 || importCount > 8 ? 'high' : exportCount > 6 ? 'medium' : 'low',
+    estimatedEffort: usedByCount > 8 || importCount > 8 ? '1-3 hours' : 'under 1 hour',
+  };
+}
+
+function stripCodeFence(value) {
+  const text = String(value || '').trim();
+  if (!text.startsWith('```')) return text;
+
+  const match = text.match(/^```(?:json|javascript|js)?\s*([\s\S]*?)\s*```$/i);
+  return (match?.[1] || text.replace(/^```(?:json|javascript|js)?\s*/i, '').replace(/\s*```$/i, '')).trim();
+}
+
+function tryParseSuggestionJson(value) {
+  const text = stripCodeFence(value);
+  if (!text || !(text.startsWith('{') || text.startsWith('['))) return null;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRefactorSuggestion(result) {
+  const concerns = Array.isArray(result?.concerns) ? result.concerns.filter(Boolean) : [];
+  let suggestions = Array.isArray(result?.suggestions) ? result.suggestions.filter(Boolean) : [];
+  let priority = String(result?.priority || '').trim() || 'medium';
+  let estimatedEffort = String(result?.estimatedEffort || '').trim() || 'unknown';
+
+  const parsedFromText = suggestions.length === 1 ? tryParseSuggestionJson(suggestions[0]) : null;
+  const parsedFromRaw = parsedFromText || tryParseSuggestionJson(result?.raw?.content || result?.raw?.text);
+
+  if (parsedFromRaw && typeof parsedFromRaw === 'object' && !Array.isArray(parsedFromRaw)) {
+    const parsedConcerns = Array.isArray(parsedFromRaw.concerns) ? parsedFromRaw.concerns.filter(Boolean) : [];
+    const parsedSuggestions = Array.isArray(parsedFromRaw.suggestions) ? parsedFromRaw.suggestions.filter(Boolean) : [];
+
+    if (parsedConcerns.length > 0) {
+      concerns.splice(0, concerns.length, ...parsedConcerns);
+    }
+
+    if (parsedSuggestions.length > 0) {
+      suggestions = parsedSuggestions;
+    } else if (suggestions.length === 1) {
+      suggestions = [stripCodeFence(suggestions[0])];
+    }
+
+    if (['high', 'medium', 'low'].includes(String(parsedFromRaw.priority).trim())) {
+      priority = String(parsedFromRaw.priority).trim();
+    }
+
+    if (String(parsedFromRaw.estimatedEffort || '').trim()) {
+      estimatedEffort = String(parsedFromRaw.estimatedEffort).trim();
+    }
+  } else if (suggestions.length === 1) {
+    suggestions = [stripCodeFence(suggestions[0])];
+  }
+
+  const cleanedSuggestions = suggestions
+    .map((item) => stripCodeFence(item))
+    .filter(Boolean);
+
+  return {
+    concerns: concerns.length > 0 ? concerns : ['No strong structural smell was detected from the static graph metadata alone.'],
+    suggestions: cleanedSuggestions.length > 0 ? cleanedSuggestions : ['Prefer smaller, testable functions and keep dependencies localized.'],
+    priority: ['high', 'medium', 'low'].includes(priority) ? priority : 'medium',
+    estimatedEffort: estimatedEffort || 'unknown',
+  };
+}
+
+function InlineText({ text }) {
+  const parts = String(text || '').split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean);
+
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (part.startsWith('`') && part.endsWith('`')) {
+          return (
+            <code
+              key={`${index}-${part}`}
+              className="rounded border border-border/40 bg-background/70 px-1 py-0.5 font-mono text-[0.92em] text-foreground"
+            >
+              {part.slice(1, -1)}
+            </code>
+          );
+        }
+
+        if (part.startsWith('**') && part.endsWith('**')) {
+          return <strong key={`${index}-${part}`}>{part.slice(2, -2)}</strong>;
+        }
+
+        return <span key={`${index}-${part}`}>{part}</span>;
+      })}
+    </>
+  );
+}
+
+function MarkdownText({ text }) {
+  const source = String(text || '').replace(/\r\n/g, '\n');
+  const lines = source.split('\n');
+  const blocks = [];
+  let paragraph = [];
+  let list = null;
+  let code = null;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push({ type: 'paragraph', text: paragraph.join(' ').trim() });
+    paragraph = [];
+  };
+
+  const flushList = () => {
+    if (!list) return;
+    blocks.push(list);
+    list = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+
+    if (code) {
+      if (line.trim().startsWith('```')) {
+        blocks.push(code);
+        code = null;
+      } else {
+        code.content.push(rawLine);
+      }
+      continue;
+    }
+
+    const fenceMatch = line.trim().match(/^```(\w+)?\s*$/);
+    if (fenceMatch) {
+      flushParagraph();
+      flushList();
+      code = { type: 'code', language: fenceMatch[1] || '', content: [] };
+      continue;
+    }
+
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,3})\s+(.*)$/);
+    if (headingMatch) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: 'heading', level: headingMatch[1].length, text: headingMatch[2].trim() });
+      continue;
+    }
+
+    const bulletMatch = line.match(/^[-*]\s+(.*)$/);
+    if (bulletMatch) {
+      flushParagraph();
+      if (!list || list.ordered) {
+        flushList();
+        list = { type: 'list', ordered: false, items: [] };
+      }
+      list.items.push(bulletMatch[1].trim());
+      continue;
+    }
+
+    const orderedMatch = line.match(/^\d+[.)]\s+(.*)$/);
+    if (orderedMatch) {
+      flushParagraph();
+      if (!list || !list.ordered) {
+        flushList();
+        list = { type: 'list', ordered: true, items: [] };
+      }
+      list.items.push(orderedMatch[1].trim());
+      continue;
+    }
+
+    flushList();
+    paragraph.push(line.trim());
+  }
+
+  flushParagraph();
+  flushList();
+
+  if (code) blocks.push(code);
+
+  return (
+    <div className="space-y-3 leading-relaxed text-foreground/80">
+      {blocks.map((block, index) => {
+        if (block.type === 'heading') {
+          const sizeClass = block.level === 1 ? 'text-sm' : block.level === 2 ? 'text-[13px]' : 'text-[12px]';
+          return (
+            <div key={`${block.type}-${index}`} className={`${sizeClass} font-semibold text-foreground`}>
+              <InlineText text={block.text} />
+            </div>
+          );
+        }
+
+        if (block.type === 'paragraph') {
+          return (
+            <p key={`${block.type}-${index}`} className="whitespace-pre-wrap">
+              <InlineText text={block.text} />
+            </p>
+          );
+        }
+
+        if (block.type === 'list') {
+          const ListTag = block.ordered ? 'ol' : 'ul';
+          return (
+            <ListTag
+              key={`${block.type}-${index}`}
+              className={`space-y-1 ${block.ordered ? 'list-decimal pl-5' : 'list-disc pl-5'}`}
+            >
+              {block.items.map((item, itemIndex) => (
+                <li key={`${index}-${itemIndex}`}>
+                  <InlineText text={item} />
+                </li>
+              ))}
+            </ListTag>
+          );
+        }
+
+        if (block.type === 'code') {
+          return (
+            <pre
+              key={`${block.type}-${index}`}
+              className="overflow-x-auto rounded-lg border border-border/40 bg-background/80 p-3 text-[11px] leading-relaxed text-foreground"
+            >
+              <code>
+                {block.language ? `${block.language}\n` : ''}
+                {block.content.join('\n')}
+              </code>
+            </pre>
+          );
+        }
+
+        return null;
+      })}
+    </div>
+  );
+}
+
+function RefactorSuggestionView({ suggestion }) {
+  const normalized = useMemo(() => normalizeRefactorSuggestion(suggestion), [suggestion]);
+
+  return (
+    <div className="space-y-3 text-xs">
+      <div>
+        <p className="mb-1 font-medium text-foreground/80">Concerns</p>
+        <ul className="space-y-1 text-muted-foreground">
+          {normalized.concerns.map((item, index) => (
+            <li key={`${item}-${index}`} className="rounded-md border border-border/30 bg-background/40 px-2 py-1">
+              <InlineText text={item} />
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div>
+        <p className="mb-1 font-medium text-foreground/80">Suggestions</p>
+        <ul className="space-y-1 text-muted-foreground">
+          {normalized.suggestions.map((item, index) => (
+            <li key={`${item}-${index}`} className="rounded-md border border-border/30 bg-background/40 px-2 py-1">
+              <InlineText text={item} />
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <p className="text-[10px] text-muted-foreground">
+        Priority: {normalized.priority} · Effort: {normalized.estimatedEffort}
+      </p>
+    </div>
+  );
+}
+
 // ─── component ──────────────────────────────────────────────────────────────
 
 export default function AiPanel({ nodeId, graph, onClose }) {
   const dispatch = useDispatch();
   const graphData = useSelector(selectGraphData);
   const impactState = useSelector(selectAiImpactState);
-  const jobId = graphData?.jobId;
+  const jobId = graphData?.jobId || graphData?.job?.jobId || graphData?.job?.id || null;
+  const [activeTab, setActiveTab] = useState('info');
 
   const [streamedText, setStreamedText]       = useState('');
   const [isStreaming, setIsStreaming]          = useState(false);
@@ -54,6 +387,9 @@ export default function AiPanel({ nodeId, graph, onClose }) {
   useEffect(() => {
     // BUG 6 FIX: clear stale impact data from the previous node immediately
     dispatch(resetAiState());
+    if (jobId) {
+      dispatch(initConversation({ jobId }));
+    }
     setStreamedText('');
     setStreamError('');
     setRefactorSuggestion(null);
@@ -136,7 +472,16 @@ export default function AiPanel({ nodeId, graph, onClose }) {
       const result = await aiService.suggestRefactor({ jobId, filePath: nodeId });
       setRefactorSuggestion(result);
     } catch (err) {
-      setRefactorError(friendlyErrorMessage(err?.message));
+      setRefactorSuggestion(
+        buildLocalRefactorSuggestion({
+          type,
+          summary,
+          declarations,
+          deps,
+          usedBy,
+        }),
+      );
+      setRefactorError('AI refactor suggestions are unavailable right now. Showing a local graph-based fallback instead.');
     } finally {
       setIsLoadingRefactor(false);
     }
@@ -171,19 +516,51 @@ export default function AiPanel({ nodeId, graph, onClose }) {
         )}
       </div>
 
+      <div className="flex gap-1">
+        {[
+          ['info', 'Info'],
+          ['chat', 'Chat'],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setActiveTab(id)}
+            className="rounded-lg border px-3 py-1 text-xs font-medium transition-colors"
+            style={{
+              background: activeTab === id ? 'rgba(168,85,247,0.15)' : 'transparent',
+              color: activeTab === id ? '#a855f7' : 'var(--text-muted)',
+              borderColor: activeTab === id ? 'rgba(168,85,247,0.3)' : 'transparent',
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'chat' && (
+        <div className="flex min-h-[420px] flex-col gap-3">
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <ChatThread />
+          </div>
+          <ChatInput jobId={jobId} />
+        </div>
+      )}
+
       {/* AI Explanation */}
+      {activeTab === 'info' && (
+      <>
       <section>
         <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
           AI Explanation
         </p>
-        <div className="min-h-[60px] rounded-lg border border-border/40 bg-muted/20 p-3 text-xs leading-relaxed text-foreground/80">
+        <div className="min-h-15 rounded-lg border border-border/40 bg-muted/20 p-3 text-xs leading-relaxed text-foreground/80">
           {isStreaming && !streamedText && (
             <span className="flex items-center gap-2 text-muted-foreground">
               <Loader2 className="size-3 animate-spin" />
               Generating explanation…
             </span>
           )}
-          {streamedText && <span>{streamedText}</span>}
+          {streamedText && <MarkdownText text={streamedText} />}
           {isStreaming && streamedText && (
             <span className="ml-1 inline-block size-1.5 animate-pulse rounded-full bg-primary" />
           )}
@@ -192,9 +569,21 @@ export default function AiPanel({ nodeId, graph, onClose }) {
           )}
           {/* BUG 1 FIX: display the friendly error message */}
           {streamError && (
-            <div className="flex items-start gap-2 text-destructive">
-              <AlertTriangle className="mt-0.5 size-3 shrink-0" />
-              <span>{streamError}</span>
+            <div className="space-y-2">
+              <div className="flex items-start gap-2 text-destructive">
+                <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+                <span>{streamError}</span>
+              </div>
+              <div className="rounded-md border border-border/40 bg-background/60 p-2 text-foreground/75">
+                {buildLocalExplanation({
+                  nodeId,
+                  type,
+                  summary,
+                  declarations,
+                  deps,
+                  usedBy,
+                })}
+              </div>
             </div>
           )}
         </div>
@@ -328,32 +717,12 @@ export default function AiPanel({ nodeId, graph, onClose }) {
           </button>
         </div>
         {refactorError && (
-          <p className="text-[10px] text-destructive">{refactorError}</p>
+          <p className="text-[10px] text-muted-foreground">{refactorError}</p>
         )}
-        {refactorSuggestion && (
-          <div className="space-y-2 text-xs">
-            {refactorSuggestion.concerns?.length > 0 && (
-              <div>
-                <p className="font-medium text-foreground/80">Concerns:</p>
-                <ul className="mt-0.5 list-inside list-disc space-y-0.5 text-muted-foreground">
-                  {refactorSuggestion.concerns.map((c, i) => <li key={i}>{c}</li>)}
-                </ul>
-              </div>
-            )}
-            {refactorSuggestion.suggestions?.length > 0 && (
-              <div>
-                <p className="font-medium text-foreground/80">Suggestions:</p>
-                <ul className="mt-0.5 list-inside list-disc space-y-0.5 text-muted-foreground">
-                  {refactorSuggestion.suggestions.map((s, i) => <li key={i}>{s}</li>)}
-                </ul>
-              </div>
-            )}
-            <p className="text-[10px] text-muted-foreground">
-              Priority: {refactorSuggestion.priority} · Effort: {refactorSuggestion.estimatedEffort}
-            </p>
-          </div>
+        {refactorSuggestion && <RefactorSuggestionView suggestion={refactorSuggestion} />}
+        </section>
+        </>
         )}
-      </section>
     </div>
   );
 }

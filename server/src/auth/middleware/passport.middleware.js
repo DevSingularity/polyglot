@@ -1,5 +1,6 @@
 import passport from 'passport';
 import { createGitHubStrategy, validateGitHubOAuthEnv } from '../services/githubStrategy.service.js';
+import { logger } from '../../utils/logger.js';
 
 let initialized = false;
 
@@ -8,14 +9,12 @@ export function configureGitHubPassport() {
 
   const envCheck = validateGitHubOAuthEnv();
   if (!envCheck.valid) {
-    console.warn(
-      `[auth] GitHub OAuth disabled. Missing env vars: ${envCheck.missing.join(', ')}`,
-    );
+    logger.warn(`[auth] GitHub OAuth disabled. Missing env vars: ${envCheck.missing.join(', ')}`);
     return;
   }
 
   passport.use(createGitHubStrategy());
   initialized = true;
 
-  console.log(`[auth] GitHub OAuth callback URL: ${envCheck.callbackURL}`);
+  logger.info(`[auth] GitHub OAuth callback URL: ${envCheck.callbackURL}`);
 }

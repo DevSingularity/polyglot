@@ -1,4 +1,5 @@
 import { pgPool } from '../infrastructure/connections.js';
+import { logger } from '../utils/logger.js';
 
 class ImpactAnalysisService {
   async findImpactedFiles(jobId, changedFiles, maxDepth = 3) {
@@ -45,7 +46,7 @@ class ImpactAnalysisService {
 
       return { impactedFiles, depth };
     } catch (err) {
-      console.error('[ImpactAnalysisService] findImpactedFiles failed:', err.message);
+      logger.error('[ImpactAnalysisService] findImpactedFiles failed:', err.message);
       return { impactedFiles: new Set(), depth: 0 };
     }
   }
@@ -81,7 +82,7 @@ class ImpactAnalysisService {
 
       return { safeFiles, riskyFiles };
     } catch (err) {
-      console.error('[ImpactAnalysisService] analyzeChangeRisk failed:', err.message);
+      logger.error('[ImpactAnalysisService] analyzeChangeRisk failed:', err.message);
       return { safeFiles: [], riskyFiles: [] };
     }
   }

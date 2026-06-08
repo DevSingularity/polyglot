@@ -2,6 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import GitHubPRService from '../../services/GitHubPRService.js';
 import ImpactAnalysisService from '../../services/ImpactAnalysisService.js';
+import { logger } from '../../utils/logger.js';
 
 const prCommentLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -77,7 +78,7 @@ export function createPrCommentRouter({
 
       // Check if GitHub token is configured
       if (!resolvedGitHubPRService.isConfigured()) {
-        console.warn('GitHub token not configured, skipping PR comment');
+        logger.warn('GitHub token not configured, skipping PR comment');
         return res.status(200).json({ message: 'GitHub token not configured' });
       }
 
@@ -86,7 +87,7 @@ export function createPrCommentRouter({
       try {
         diff = await resolvedGitHubPRService.getPRDiff(owner, repo, parseInt(prNumber, 10));
       } catch (err) {
-        console.error('Failed to fetch PR diff:', err.message);
+        logger.error('Failed to fetch PR diff:', err.message);
         return res.status(200).json({ message: 'Failed to fetch PR diff', error: err.message });
       }
 
@@ -94,7 +95,7 @@ export function createPrCommentRouter({
       const changedFiles = resolvedGitHubPRService.parseDiff(diff).map((f) => f.file);
 
       if (changedFiles.length === 0) {
-        console.log('No changed files found in diff');
+        logger.info('No changed files found in diff');
         return res.status(200).json({ message: 'No changed files in diff' });
       }
 
@@ -120,7 +121,7 @@ export function createPrCommentRouter({
           parseInt(prNumber, 10),
         );
       } catch (err) {
-        console.error('Failed to find existing comment:', err.message);
+        logger.error('Failed to find existing comment:', err.message);
       }
 
       // Post or update comment
@@ -133,7 +134,7 @@ export function createPrCommentRouter({
             existingComment.id,
             comment,
           );
-          console.log(`Updated PR comment #${existingComment.id} on ${owner}/${repo}#${prNumber}`);
+          logger.info(`Updated PR comment #${existingComment.id} on ${owner}/${repo}#${prNumber}`);
         } else {
           result = await resolvedGitHubPRService.postPRComment(
             owner,
@@ -141,10 +142,10 @@ export function createPrCommentRouter({
             parseInt(prNumber, 10),
             comment,
           );
-          console.log(`Posted PR comment on ${owner}/${repo}#${prNumber}`);
+          logger.info(`Posted PR comment on ${owner}/${repo}#${prNumber}`);
         }
       } catch (err) {
-        console.error('Failed to post/update PR comment:', err.message);
+        logger.error('Failed to post/update PR comment:', err.message);
         return res.status(200).json({
           message: 'Analysis complete but failed to post comment',
           error: err.message,
@@ -177,7 +178,7 @@ export function createPrCommentRouter({
         impactedFiles: impactedFiles.length,
       });
     } catch (error) {
-      console.error('PR comment posting failed:', error);
+      logger.error('PR comment posting failed:', error);
       return next(error);
     }
   });

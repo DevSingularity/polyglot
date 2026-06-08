@@ -3,9 +3,6 @@ import { BaseAgent } from '../core/BaseAgent.js';
 import { pgPool, redisClient } from '../../infrastructure/connections.js';
 import { createChatClient, createEmbeddingClient } from '../../services/ai/llmProvider.js';
 
-const DEFAULT_MODEL = process.env.AI_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const DEFAULT_EMBEDDING_MODEL =
-  process.env.AI_EMBEDDING_MODEL || process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
 const CACHE_TTL_SECONDS = Number(process.env.AI_CACHE_TTL_SECONDS || 3600);
 const SEMANTIC_CANDIDATE_LIMIT = 20;
 const CONTEXT_LIMIT = 8;
@@ -48,7 +45,16 @@ function confidenceLabel(score) {
 
 function sanitizeHighlights(filePaths) {
   if (!Array.isArray(filePaths)) return [];
-  return [...new Set(filePaths.filter(Boolean).map((path) => String(path).trim()))].slice(0, CONTEXT_LIMIT);
+  const normalized = [];
+  for (const item of filePaths) {
+    if (!item) continue;
+    if (typeof item === 'string') normalized.push(item.trim());
+    else if (typeof item === 'object') {
+      const p = item.filePath || item.file_path || item.path;
+      if (p) normalized.push(String(p).trim());
+    }
+  }
+  return [...new Set(normalized)].slice(0, CONTEXT_LIMIT);
 }
 
 function buildContextLine(candidate) {
@@ -127,8 +133,8 @@ export class QueryAgent extends BaseAgent {
     this.redis = redis || redisClient;
     this.llmClient = llmClient || createChatClient();
     this.embeddingClient = embeddingClient || createEmbeddingClient();
-    this.model = DEFAULT_MODEL;
-    this.embeddingModel = DEFAULT_EMBEDDING_MODEL;
+    this.model = this.llmClient.model;
+    this.embeddingModel = this.embeddingClient.model;
     this.cacheTtlSeconds = Number.isFinite(CACHE_TTL_SECONDS) ? CACHE_TTL_SECONDS : 3600;
   }
 
@@ -248,6 +254,42 @@ export class QueryAgent extends BaseAgent {
       const reranked = keywordRerank(question, candidates);
       const topFiles = reranked.slice(0, CONTEXT_LIMIT);
 
+      // Parallel: query function embeddings to find function-level matches and optionally fetch body_source
+      let functionHighlights = new Map();
+      try {
+        const fnRes = await this.db.query(
+          `SELECT file_path, function_name, body_summary, embedding <=> $1::vector AS distance
+           FROM function_embeddings
+           WHERE job_id = $2
+           ORDER BY embedding <=> $1::vector
+           LIMIT 12`,
+          [vectorLiteral, jobId],
+        );
+
+        const toFetch = (fnRes.rows || []).filter((r) => Number(r.distance) < 0.30);
+        if (toFetch.length > 0) {
+          // Build dynamic OR query to fetch body_source from function_nodes for matched functions
+          const clauses = [];
+          const params = [jobId];
+          let idx = 2;
+          for (const f of toFetch) {
+            clauses.push(`(file_path = $${idx} AND name = $${idx + 1})`);
+            params.push(f.file_path, f.function_name);
+            idx += 2;
+          }
+
+          const q = `SELECT file_path, name, body_source FROM function_nodes WHERE job_id = $1 AND (${clauses.join(' OR ')})`;
+          const bodies = await this.db.query(q, params).catch(() => ({ rows: [] }));
+          for (const b of bodies.rows || []) {
+            if (!b.file_path) continue;
+            const snippet = b.body_source ? (String(b.body_source).slice(0, 400)) : null;
+            if (!functionHighlights.has(b.file_path)) functionHighlights.set(b.file_path, snippet);
+          }
+        }
+      } catch (err) {
+        // best-effort
+      }
+
       const completion = await this.llmClient.createChatCompletion({
         model: this.model,
         temperature: 0.1,
@@ -268,7 +310,12 @@ export class QueryAgent extends BaseAgent {
         };
       }
 
-      const highlightedFiles = sanitizeHighlights(parsed.highlightedFiles?.length ? parsed.highlightedFiles : topFiles.map((file) => file.file_path));
+      // Build highlighted files array with optional snippet from function-level highlights
+      const highlightedCandidates = parsed.highlightedFiles?.length
+        ? parsed.highlightedFiles
+        : topFiles.map((file) => ({ filePath: file.file_path, snippet: functionHighlights.get(file.file_path) || null }));
+
+      const highlightedFiles = sanitizeHighlights(highlightedCandidates);
       const llmConfidence = ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : confidenceLabel((topFiles[0]?._score || 0));
 
       const result = {

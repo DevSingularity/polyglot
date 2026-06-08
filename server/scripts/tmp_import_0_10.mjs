@@ -1,0 +1,12 @@
+import 'express';
+import 'cors';
+import 'cookie-parser';
+import 'passport';
+import '@sentry/node';
+import 'path';
+import 'fs';
+import 'url';
+import './src/analyze/index.js';
+import './src/auth/index.js';
+import './src/api/jobs/index.js';
+export default 0;

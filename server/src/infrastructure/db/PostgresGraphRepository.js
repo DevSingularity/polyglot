@@ -31,6 +31,7 @@ export class PostgresGraphRepository extends IGraphRepository {
 
       // 1. Nodes
       const nodePaths = [], nodeTypes = [], nodeDeclarations = [], nodeMetrics = [], nodeSummaries = [], nodeDeadFlags = [];
+      const nodeRawContents = [];
       const deadCodeSet = new Set(Array.isArray(topology.deadCodeCandidates) ? topology.deadCodeCandidates : []);
       
       for (const [path, node] of Object.entries(graph)) {
@@ -39,34 +40,38 @@ export class PostgresGraphRepository extends IGraphRepository {
         nodeDeclarations.push(toJson(node?.declarations, []));
         nodeMetrics.push(toJson(node?.metrics, {}));
         nodeSummaries.push(params.enriched?.[path]?.summary || null);
+        nodeRawContents.push(node?.rawContent ?? null);
         nodeDeadFlags.push(deadCodeSet.has(path));
       }
 
       if (nodePaths.length > 0) {
         await client.query(
-          `INSERT INTO graph_nodes (job_id, file_path, file_type, declarations, metrics, summary, is_dead_code)
-           SELECT $1, unnest($2::text[]), unnest($3::text[]), unnest($4::jsonb[]), unnest($5::jsonb[]), unnest($6::text[]), unnest($7::boolean[])
-           ON CONFLICT (job_id, file_path) DO UPDATE SET file_type = EXCLUDED.file_type, declarations = EXCLUDED.declarations, metrics = EXCLUDED.metrics, summary = EXCLUDED.summary, is_dead_code = EXCLUDED.is_dead_code`,
-          [jobId, nodePaths, nodeTypes, nodeDeclarations, nodeMetrics, nodeSummaries, nodeDeadFlags]
+          `INSERT INTO graph_nodes (job_id, file_path, file_type, declarations, metrics, summary, raw_content, is_dead_code)
+           SELECT $1, unnest($2::text[]), unnest($3::text[]), unnest($4::jsonb[]), unnest($5::jsonb[]), unnest($6::text[]), unnest($7::text[]), unnest($8::boolean[])
+           ON CONFLICT (job_id, file_path) DO UPDATE SET file_type = EXCLUDED.file_type, declarations = EXCLUDED.declarations, metrics = EXCLUDED.metrics, summary = EXCLUDED.summary, raw_content = EXCLUDED.raw_content, is_dead_code = EXCLUDED.is_dead_code`,
+          [jobId, nodePaths, nodeTypes, nodeDeclarations, nodeMetrics, nodeSummaries, nodeRawContents, nodeDeadFlags]
         );
       }
 
       // 2. Edges
       const edgeSourcePaths = [], edgeTargetPaths = [], edgeTypes = [];
+      const edgeSourceLines = [], edgeTargetLines = [];
       const edgesToPersist = typedEdges.length > 0 ? typedEdges : edges;
       for (const edge of edgesToPersist) {
         if (!edge?.source || !edge?.target) continue;
         edgeSourcePaths.push(edge.source);
         edgeTargetPaths.push(edge.target);
         edgeTypes.push(edge.type || 'import');
+        edgeSourceLines.push(toJson(edge.source_lines ?? null, null));
+        edgeTargetLines.push(toJson(edge.target_lines ?? null, null));
       }
 
       if (edgeSourcePaths.length > 0) {
         await client.query(
-          `INSERT INTO graph_edges (job_id, source_path, target_path, edge_type)
-           SELECT $1, unnest($2::text[]), unnest($3::text[]), unnest($4::text[])
-           ON CONFLICT (job_id, source_path, target_path, edge_type) DO NOTHING`,
-          [jobId, edgeSourcePaths, edgeTargetPaths, edgeTypes]
+          `INSERT INTO graph_edges (job_id, source_path, target_path, edge_type, source_lines, target_lines)
+           SELECT $1, unnest($2::text[]), unnest($3::text[]), unnest($4::text[]), unnest($5::jsonb[]), unnest($6::jsonb[])
+           ON CONFLICT (job_id, source_path, target_path, edge_type) DO UPDATE SET source_lines = EXCLUDED.source_lines, target_lines = EXCLUDED.target_lines`,
+          [jobId, edgeSourcePaths, edgeTargetPaths, edgeTypes, edgeSourceLines, edgeTargetLines]
         );
       }
 
@@ -90,7 +95,7 @@ export class PostgresGraphRepository extends IGraphRepository {
       }
 
       // 4. Function Nodes
-      const fnPaths = [], fnNames = [], fnKinds = [], fnCalls = [], fnLocs = [];
+      const fnPaths = [], fnNames = [], fnKinds = [], fnCalls = [], fnLocs = [], fnBodySources = [];
       for (const [path, declarations] of Object.entries(functionNodes)) {
         if (!Array.isArray(declarations)) continue;
         for (const dec of declarations) {
@@ -100,15 +105,16 @@ export class PostgresGraphRepository extends IGraphRepository {
           fnKinds.push(dec.kind || 'function');
           fnCalls.push(toJson(dec.calls, []));
           fnLocs.push(dec.loc ?? null);
+          fnBodySources.push(dec.bodySource ?? null);
         }
       }
 
       if (fnPaths.length > 0) {
         await client.query(
-          `INSERT INTO function_nodes (job_id, file_path, name, kind, calls, loc)
-           SELECT $1, unnest($2::text[]), unnest($3::text[]), unnest($4::text[]), unnest($5::jsonb[]), unnest($6::integer[])
-           ON CONFLICT (job_id, file_path, name) DO UPDATE SET kind = EXCLUDED.kind, calls = EXCLUDED.calls, loc = EXCLUDED.loc`,
-          [jobId, fnPaths, fnNames, fnKinds, fnCalls, fnLocs]
+          `INSERT INTO function_nodes (job_id, file_path, name, kind, calls, loc, body_source)
+           SELECT $1, unnest($2::text[]), unnest($3::text[]), unnest($4::text[]), unnest($5::jsonb[]), unnest($6::integer[]), unnest($7::text[])
+           ON CONFLICT (job_id, file_path, name) DO UPDATE SET kind = EXCLUDED.kind, calls = EXCLUDED.calls, loc = EXCLUDED.loc, body_source = EXCLUDED.body_source`,
+          [jobId, fnPaths, fnNames, fnKinds, fnCalls, fnLocs, fnBodySources]
         );
       }
 
@@ -208,6 +214,96 @@ export class PostgresGraphRepository extends IGraphRepository {
     }
 
     return Array.from(impacted);
+  }
+
+  async getContextForQuery(jobId, seedPaths, { maxFiles = 12, seedLimit = 5 } = {}) {
+    if (!Array.isArray(seedPaths) || seedPaths.length === 0) return [];
+
+    const seeds = seedPaths.slice(0, seedLimit).filter(Boolean);
+    if (seeds.length === 0) return [];
+
+    try {
+      const seedResult = await this.pgPool.query(
+        `SELECT file_path, file_type, summary, declarations
+         FROM graph_nodes
+         WHERE job_id = $1 AND file_path = ANY($2)`,
+        [jobId, seeds],
+      );
+
+      const fileMap = new Map();
+      for (const row of seedResult.rows) {
+        fileMap.set(row.file_path, {
+          filePath: row.file_path,
+          fileType: row.file_type || 'module',
+          summary: row.summary || null,
+          declarations: Array.isArray(row.declarations) ? row.declarations : [],
+          relationships: [],
+          distance: 0,
+        });
+      }
+
+      const edgeResult = await this.pgPool.query(
+        `SELECT
+           CASE WHEN source_path = ANY($1) THEN target_path ELSE source_path END AS neighbour,
+           CASE
+             WHEN source_path = ANY($1) AND lower(edge_type) = 'import' THEN 'IMPORTS'
+             WHEN source_path = ANY($1) THEN UPPER(edge_type)
+             ELSE 'IMPORTED_BY'
+           END AS rel_type,
+           CASE WHEN source_path = ANY($1) THEN source_path ELSE target_path END AS seed_path
+         FROM graph_edges
+         WHERE job_id = $2
+           AND (source_path = ANY($1) OR target_path = ANY($1))`,
+        [seeds, jobId],
+      );
+
+      const neighbourPaths = new Set();
+      for (const row of edgeResult.rows) {
+        if (row.neighbour && !fileMap.has(row.neighbour)) {
+          neighbourPaths.add(row.neighbour);
+        }
+
+        if (row.seed_path && fileMap.has(row.seed_path) && row.neighbour) {
+          fileMap.get(row.seed_path).relationships.push({
+            type: row.rel_type || 'IMPORTS',
+            target: row.neighbour,
+          });
+        }
+      }
+
+      if (neighbourPaths.size > 0) {
+        const neighbourResult = await this.pgPool.query(
+          `SELECT file_path, file_type, summary, declarations
+           FROM graph_nodes
+           WHERE job_id = $1 AND file_path = ANY($2)`,
+          [jobId, [...neighbourPaths]],
+        );
+
+        for (const row of neighbourResult.rows) {
+          fileMap.set(row.file_path, {
+            filePath: row.file_path,
+            fileType: row.file_type || 'module',
+            summary: row.summary || null,
+            declarations: Array.isArray(row.declarations) ? row.declarations : [],
+            relationships: [],
+            distance: 1.0,
+          });
+        }
+      }
+
+      return [...fileMap.values()]
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, maxFiles);
+    } catch {
+      return seedPaths.slice(0, maxFiles).map((path) => ({
+        filePath: path,
+        fileType: 'module',
+        summary: null,
+        declarations: [],
+        relationships: [],
+        distance: 0,
+      }));
+    }
   }
 
   async healthCheck() {

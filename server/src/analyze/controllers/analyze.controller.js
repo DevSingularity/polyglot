@@ -1,4 +1,3 @@
-import path from 'path';
 import { validateLocalRepository } from '../services/analyze.service.js';
 import {
   getLocalPickerCapabilities,
@@ -17,146 +16,13 @@ import {
 } from '../services/githubApi.service.js';
 import { pgPool, redisClient } from '../../infrastructure/connections.js';
 import {
-  buildAnalysisHistoryCacheKey,
-  cacheTtl,
   invalidateAnalysisHistoryCacheForUser,
   invalidateRepositoriesCacheForUser,
   readJsonCache,
-  writeJsonCache,
-} from '../../infrastructure/cache.js';
-import { enqueueAnalysisJob } from '../../queue/analysisQueue.js';
-import { getAuthUser, resolveDatabaseUserId } from '../../utils/authUser.js';
+import { inferRepositoryName, inferRepositoryOwner } from '../shared/repoIdentity.js';
+import { analyzeController } from '../upload/upload.controller.js';
 
-function buildRepositoryIdentity(input) {
-  if (input?.source === 'local') {
-    return {
-      source: 'local',
-      fullName: input.localPath,
-      githubOwner: null,
-      githubRepo: null,
-      defaultBranch: null,
-      branch: null,
-    };
-  }
-
-  const github = input?.github || {};
-  let owner = github.owner || null;
-  let repo = github.repo || null;
-
-  if ((!owner || !repo) && github.url) {
-    const parsed = parseGitHubRepoUrl(github.url);
-    owner = parsed.owner;
-    repo = parsed.repo;
-  }
-
-  if (!owner || !repo) {
-    const err = new Error('GitHub source requires owner/repo or a valid GitHub URL.');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  return {
-    source: 'github',
-    fullName: `${owner}/${repo}`,
-    githubOwner: owner,
-    githubRepo: repo,
-    defaultBranch: github.branch || null,
-    branch: github.branch || null,
-  };
-}
-
-function inferRepositoryName({ source, fullName, githubRepo }) {
-  if (githubRepo) return githubRepo;
-  if (!fullName) return source === 'local' ? 'Local repository' : 'Unknown repository';
-
-  if (source === 'local') {
-    const normalized = String(fullName).replace(/\\/g, '/');
-    return path.posix.basename(normalized) || 'Local repository';
-  }
-
-  const parts = String(fullName).split('/').filter(Boolean);
-  return parts[1] || parts[0] || 'Unknown repository';
-}
-
-function inferRepositoryOwner({ source, fullName, githubOwner }) {
-  if (githubOwner) return githubOwner;
-  if (source === 'local') return 'local';
-
-  const parts = String(fullName || '').split('/').filter(Boolean);
-  return parts[0] || 'unknown';
-}
-
-async function createOrGetRepository({ userId, repository }) {
-  const result = await pgPool.query(
-    `
-      INSERT INTO repositories (
-        owner_id,
-        source,
-        full_name,
-        github_owner,
-        github_repo,
-        default_branch,
-        last_scanned_at,
-        scan_count
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, NOW(), 1)
-      ON CONFLICT (owner_id, full_name)
-      DO UPDATE
-      SET source = EXCLUDED.source,
-          github_owner = COALESCE(EXCLUDED.github_owner, repositories.github_owner),
-          github_repo = COALESCE(EXCLUDED.github_repo, repositories.github_repo),
-          default_branch = COALESCE(EXCLUDED.default_branch, repositories.default_branch),
-          last_scanned_at = NOW(),
-          scan_count = repositories.scan_count + 1
-      RETURNING id
-    `,
-    [
-      userId,
-      repository.source,
-      repository.fullName,
-      repository.githubOwner,
-      repository.githubRepo,
-      repository.defaultBranch,
-    ],
-  );
-
-  return result.rows[0]?.id;
-}
-
-async function createAnalysisJob({ repositoryId, userId, branch }) {
-  const result = await pgPool.query(
-    `
-      INSERT INTO analysis_jobs (repository_id, user_id, branch, status)
-      VALUES ($1, $2, $3, 'queued')
-      RETURNING id
-    `,
-    [repositoryId, userId, branch || null],
-  );
-
-  return result.rows[0]?.id;
-}
-
-export async function analyzeController(req, res, next) {
-  try {
-    const authUser = getAuthUser(req);
-    if (!authUser?.id) {
-      return res.status(401).json({
-        error: 'Authentication required to start analysis jobs.',
-      });
-    }
-
-    const userId = await resolveDatabaseUserId(authUser);
-    if (!userId) {
-      const err = new Error('Failed to resolve authenticated user record.');
-      err.statusCode = 500;
-      throw err;
-    }
-
-    const repository = buildRepositoryIdentity(req.body);
-    const repositoryId = await createOrGetRepository({ userId, repository });
-
-    if (!repositoryId) {
-      const err = new Error('Failed to resolve repository record for analysis job.');
+export { analyzeController };
       err.statusCode = 500;
       throw err;
     }
@@ -182,6 +48,7 @@ export async function analyzeController(req, res, next) {
       // forceNeo4j: true,
       // forcePostgres: true,
     };
+      writeJsonCache,
 
     await enqueueAnalysisJob({
       jobId,
@@ -389,6 +256,15 @@ export async function listOwnedReposController(req, res, next) {
         loginUrl: '/api/auth/github?reauth=1',
         action:
           'Re-authenticate with GitHub. If this persists, revoke this app in GitHub Settings > Applications, then connect again.',
+      });
+    }
+
+    if (err.statusCode === 404) {
+      return res.status(401).json({
+        error: 'GitHub token is missing, expired, or no longer authorized. Please reconnect GitHub.',
+        loginUrl: '/api/auth/github?reauth=1',
+        action:
+          'Reconnect GitHub to refresh your token and repository access. If this persists, revoke the app authorization in GitHub Settings > Applications and connect again.',
       });
     }
 
@@ -672,6 +548,166 @@ export async function updateRepositoryFileController(req, res, next) {
         sha: updated.sha,
         htmlUrl: updated.htmlUrl,
         commitSha: updated.commitSha,
+      },
+    });
+  } catch (err) {
+    return next(err);
+  }
+}
+
+export async function createPrCommitController(req, res, next) {
+  try {
+    const token = req.cookies?.github_token;
+    if (!token) {
+      const err = new Error('GitHub authentication required to create a PR.');
+      err.statusCode = 401;
+      throw err;
+    }
+
+    const owner = typeof req.body.owner === 'string' ? req.body.owner.trim() : '';
+    const repo = typeof req.body.repo === 'string' ? req.body.repo.trim() : '';
+    const path = typeof req.body.path === 'string' ? req.body.path.trim() : '';
+    const content = typeof req.body.content === 'string' ? req.body.content : null;
+    const sourceBranch = typeof req.body.sourceBranch === 'string' && req.body.sourceBranch ? req.body.sourceBranch : null;
+    const targetBranch = typeof req.body.targetBranch === 'string' && req.body.targetBranch ? req.body.targetBranch : null;
+    const branch = typeof req.body.branch === 'string' && req.body.branch ? req.body.branch : null;
+    const commitMessage = typeof req.body.commitMessage === 'string' ? req.body.commitMessage : `Update ${path} via PolyGlot`;
+    const prTitle = typeof req.body.prTitle === 'string' ? req.body.prTitle : `Update ${path}`;
+    const prBody = typeof req.body.prBody === 'string' ? req.body.prBody : '';
+    const createPullRequest = req.body.createPullRequest !== false;
+    const sha = typeof req.body.sha === 'string' && req.body.sha ? req.body.sha : null;
+
+    if (!owner || !repo || !path || content === null) {
+      const err = new Error('Missing required parameters: owner, repo, path, content');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const repoDetails = await (async () => {
+      const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'polyglot',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        const err = new Error(`GitHub API GET /repos/${owner}/${repo} failed: ${response.status} ${text}`);
+        err.statusCode = response.status;
+        throw err;
+      }
+
+      return response.json();
+    })();
+
+    // Helper to call GitHub API
+    const ghFetch = async (method, apiPath, body) => {
+      const url = `https://api.github.com${apiPath}`;
+      const resp = await fetch(url, {
+        method,
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'polyglot',
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        const err = new Error(`GitHub API ${method} ${apiPath} failed: ${resp.status} ${text}`);
+        err.statusCode = resp.status;
+        throw err;
+      }
+      return resp.json();
+    };
+
+    const defaultBranch = repoDetails?.default_branch || 'main';
+    const baseBranch = targetBranch || branch || defaultBranch;
+    const headBranch = sourceBranch || `${baseBranch}-polyglot-${Date.now()}`;
+
+    if (String(headBranch).toLowerCase() === 'main') {
+      const err = new Error('Creating PRs from the main branch is not allowed. Choose or generate a feature branch.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const baseCandidates = [...new Set([baseBranch, defaultBranch].filter(Boolean))];
+
+    const getBranchSha = async (branchName) => {
+      if (!branchName) return null;
+      try {
+        const branchRef = await ghFetch('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${encodeURIComponent(branchName)}`);
+        return branchRef?.object?.sha || null;
+      } catch (err) {
+        if (err.statusCode === 404) return null;
+        throw err;
+      }
+    };
+
+    // 1) Ensure head branch exists (create from a valid base if provided)
+    try {
+      const headSha = await getBranchSha(headBranch);
+      if (headSha) {
+        // Head already exists; use it as-is.
+      } else {
+        let baseSha = null;
+        for (const candidate of baseCandidates) {
+          baseSha = await getBranchSha(candidate);
+          if (baseSha) break;
+        }
+
+        if (!baseSha) {
+          const err = new Error(
+            `Base branch not found. Tried: ${baseCandidates.join(', ') || defaultBranch}. Please pick an existing branch.`,
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+
+        await ghFetch('POST', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs`, {
+          ref: `refs/heads/${headBranch}`,
+          sha: baseSha,
+        });
+      }
+    } catch (err) {
+      return next(err);
+    }
+
+    // 2) Create or update file on head branch
+    const encoded = Buffer.from(String(content), 'utf8').toString('base64');
+    const putBody = {
+      message: commitMessage,
+      content: encoded,
+      branch: headBranch,
+    };
+    if (sha) putBody.sha = sha;
+
+    const fileResp = await ghFetch('PUT', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(path)}`, putBody);
+
+    let prResp = null;
+    if (createPullRequest) {
+      prResp = await ghFetch('POST', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`, {
+        title: prTitle,
+        head: headBranch,
+        base: baseBranch,
+        body: prBody,
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      prUrl: prResp?.html_url || null,
+      prNumber: prResp?.number || null,
+      savedBranch: headBranch,
+      baseBranch,
+      file: {
+        path: fileResp?.content?.path || path,
+        sha: fileResp?.content?.sha || null,
+        htmlUrl: fileResp?.content?.html_url || null,
+        commitSha: fileResp?.commit?.sha || null,
       },
     });
   } catch (err) {

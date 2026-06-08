@@ -35,33 +35,74 @@ function extractPatterns(content, regex) {
   return [...new Set(results)];
 }
 
-function addEdge(acc, dedupe, source, target, type) {
+function addEdge(acc, dedupe, source, target, type, meta = {}) {
   const key = `${source}|${target}|${type}`;
   if (dedupe.has(key)) return;
   dedupe.add(key);
-  acc.push({ source, target, type });
+  const edge = { source, target, type };
+  if (meta && typeof meta === 'object') {
+    if (meta.source_lines) edge.source_lines = meta.source_lines;
+    if (meta.target_lines) edge.target_lines = meta.target_lines;
+  }
+  acc.push(edge);
 }
 
 async function classifyFile(absolutePath, relativePath, parsedNode, fileFunctionNodes = []) {
   const ext = path.extname(absolutePath).toLowerCase();
   const typedEdges = [];
   const dedupe = new Set();
-
-  for (const dep of parsedNode?.deps || []) {
-    addEdge(typedEdges, dedupe, relativePath, dep, 'IMPORTS');
-  }
-
-  for (const fn of Array.isArray(fileFunctionNodes) ? fileFunctionNodes : []) {
-    for (const callee of fn?.calls || []) {
-      addEdge(typedEdges, dedupe, relativePath, `symbol:${callee}`, 'CALLS');
-    }
-  }
-
   let content = '';
   try {
     content = await readFile(absolutePath, 'utf8');
   } catch {
-    return typedEdges;
+    // leave content empty if file read fails
+    content = '';
+  }
+
+  for (const dep of parsedNode?.deps || []) {
+    try {
+      const idx = content.indexOf(dep);
+      let srcLines = null;
+      if (idx >= 0) {
+        const start = content.slice(0, idx).split('\n').length;
+        srcLines = [start, start];
+      }
+      addEdge(typedEdges, dedupe, relativePath, dep, 'IMPORTS', { source_lines: srcLines });
+    } catch (e) {
+      addEdge(typedEdges, dedupe, relativePath, dep, 'IMPORTS');
+    }
+  }
+  for (const fn of Array.isArray(fileFunctionNodes) ? fileFunctionNodes : []) {
+    const fnBody = fn?.bodySource || null;
+    for (const callee of fn?.calls || []) {
+      try {
+        let srcLines = null;
+        if (fnBody && fnBody.length > 0) {
+          const bodyIndex = content.indexOf(fnBody);
+          if (bodyIndex >= 0) {
+            const idxInBody = fnBody.indexOf(callee);
+            if (idxInBody >= 0) {
+              const absoluteOffset = bodyIndex + idxInBody;
+              const startLine = content.slice(0, absoluteOffset).split('\n').length;
+              srcLines = [startLine, startLine];
+            }
+          }
+        }
+
+        // Fallback: search whole file for callee occurrence
+        if (!srcLines) {
+          const idx = content.indexOf(callee);
+          if (idx >= 0) {
+            const start = content.slice(0, idx).split('\n').length;
+            srcLines = [start, start];
+          }
+        }
+
+        addEdge(typedEdges, dedupe, relativePath, `symbol:${callee}`, 'CALLS', { source_lines: srcLines });
+      } catch (e) {
+        addEdge(typedEdges, dedupe, relativePath, `symbol:${callee}`, 'CALLS');
+      }
+    }
   }
 
   const routes = [

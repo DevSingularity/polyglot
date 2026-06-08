@@ -1,12 +1,15 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { useSelector } from 'react-redux';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AlertCircle, MessageSquareText, Network, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { QueryBar, QueryHistory } from '@/features/ai';
+import { ChatInput, ChatThread, QueryHistory, initConversation } from '@/features/ai';
+import { useDispatch } from 'react-redux';
+import ConversationHistory from '../components/ConversationHistory';
 import { selectGraphData } from '@/features/graph';
 
 export default function AskPage() {
+  const dispatch = useDispatch();
   const [searchParams] = useSearchParams();
   const graphData = useSelector(selectGraphData);
 
@@ -15,6 +18,12 @@ export default function AskPage() {
     if (urlJobId) return urlJobId;
     return graphData?.jobId || null;
   }, [graphData?.jobId, searchParams]);
+
+  useEffect(() => {
+    if (activeJobId) {
+      dispatch(initConversation({ jobId: activeJobId }));
+    }
+  }, [activeJobId, dispatch]);
 
   return (
     <div className="mx-auto flex h-[calc(100vh-6.75rem)] w-full max-w-375 flex-col px-4 pb-4 pt-6">
@@ -81,10 +90,20 @@ export default function AskPage() {
               </span>
             </div>
 
-            <QueryBar jobId={activeJobId} />
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                <ChatThread />
+              </div>
+              <div className="shrink-0 pt-4">
+                <ChatInput jobId={activeJobId} />
+              </div>
+            </div>
           </article>
 
           <aside className="min-h-0 rounded-2xl border border-border/60 bg-card/30 p-4 shadow-sm">
+            <div className="mb-3">
+              <ConversationHistory jobId={activeJobId} />
+            </div>
             <div className="mb-2 flex items-center gap-2">
               <MessageSquareText className="size-4 text-muted-foreground" />
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">

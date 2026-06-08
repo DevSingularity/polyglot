@@ -1,9 +1,12 @@
 import axios from 'axios';
 import OpenAI from 'openai';
 
-const DEFAULT_CHAT_MODEL = process.env.AI_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const DEFAULT_EMBEDDING_MODEL =
-  process.env.AI_EMBEDDING_MODEL || process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
+const DEFAULT_OPENAI_CHAT_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const DEFAULT_GEMINI_CHAT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+const DEFAULT_ANTHROPIC_CHAT_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022';
+const DEFAULT_CHAT_MODEL = process.env.AI_MODEL || null;
+const DEFAULT_OPENAI_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
+const DEFAULT_GEMINI_EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL || 'gemini-embedding-2';
 
 function normalizeProvider(value) {
   const provider = String(value || 'openai-compatible').trim().toLowerCase();
@@ -20,44 +23,109 @@ function normalizeProvider(value) {
     return 'anthropic';
   }
 
+  // keep provider mapping minimal here; embeddings support handled in EmbeddingClient
+
   return provider;
 }
 
-function resolveChatApiKey(provider) {
-  return (
-    process.env.AI_API_KEY
-    || (provider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : null)
-    || (provider === 'gemini' ? process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY : null)
-    || process.env.OPENAI_API_KEY
-    || null
-  );
+function resolveChatApiKey(provider, explicitApiKey) {
+  if (explicitApiKey) return explicitApiKey;
+
+  if (provider === 'gemini') {
+    return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.AI_API_KEY || null;
+  }
+
+  if (provider === 'anthropic') {
+    return process.env.ANTHROPIC_API_KEY || process.env.AI_API_KEY || null;
+  }
+
+  return process.env.AI_API_KEY || process.env.OPENAI_API_KEY || null;
 }
 
-function resolveChatBaseUrl(provider) {
-  if (process.env.AI_BASE_URL) return process.env.AI_BASE_URL;
-  if (process.env.OPENAI_BASE_URL) return process.env.OPENAI_BASE_URL;
-
-  if (provider === 'anthropic') return 'https://api.anthropic.com/v1/messages';
-  if (provider === 'gemini') return 'https://generativelanguage.googleapis.com/v1beta';
-  return null;
+function resolveChatModel(provider, explicitModel) {
+  if (explicitModel) return explicitModel;
+  if (DEFAULT_CHAT_MODEL) return DEFAULT_CHAT_MODEL;
+  if (provider === 'gemini') return DEFAULT_GEMINI_CHAT_MODEL;
+  if (provider === 'anthropic') return DEFAULT_ANTHROPIC_CHAT_MODEL;
+  return DEFAULT_OPENAI_CHAT_MODEL;
 }
 
-function resolveEmbeddingProvider() {
-  return normalizeProvider(process.env.AI_EMBEDDING_PROVIDER || process.env.AI_PROVIDER || 'openai-compatible');
+function resolveChatBaseUrl(provider, explicitBaseUrl) {
+  if (explicitBaseUrl) return explicitBaseUrl;
+
+  if (provider === 'gemini') {
+    return process.env.GEMINI_BASE_URL
+      || process.env.GOOGLE_BASE_URL
+      || process.env.AI_BASE_URL
+      || 'https://generativelanguage.googleapis.com/v1beta';
+  }
+
+  if (provider === 'anthropic') {
+    return process.env.ANTHROPIC_BASE_URL || process.env.AI_BASE_URL || 'https://api.anthropic.com/v1/messages';
+  }
+
+  return process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL || null;
 }
 
-function resolveEmbeddingApiKey(provider) {
-  return (
-    process.env.AI_EMBEDDING_API_KEY
-    || process.env.AI_API_KEY
-    || process.env.OPENAI_API_KEY
-    || (provider === 'gemini' ? process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY : null)
-    || null
-  );
+function resolveEmbeddingProvider(explicitProvider) {
+  return normalizeProvider(explicitProvider || process.env.AI_EMBEDDING_PROVIDER || process.env.AI_PROVIDER || 'openai-compatible');
 }
 
-function resolveEmbeddingBaseUrl() {
+function resolveEmbeddingApiKey(provider, explicitApiKey) {
+  if (explicitApiKey) return explicitApiKey;
+
+  if (provider === 'gemini') {
+    return process.env.AI_EMBEDDING_API_KEY
+      || process.env.GEMINI_API_KEY
+      || process.env.GOOGLE_API_KEY
+      || process.env.AI_API_KEY
+      || null;
+  }
+
+  return process.env.AI_EMBEDDING_API_KEY || process.env.AI_API_KEY || process.env.OPENAI_API_KEY || null;
+}
+
+function resolveEmbeddingBaseUrl(provider, explicitBaseUrl) {
+  if (explicitBaseUrl) return explicitBaseUrl;
+
+  if (provider === 'gemini') {
+    const baseUrl = process.env.AI_EMBEDDING_BASE_URL
+      || process.env.GEMINI_EMBEDDING_BASE_URL
+      || process.env.GEMINI_BASE_URL
+      || process.env.GOOGLE_BASE_URL
+      || process.env.AI_BASE_URL
+      || 'https://generativelanguage.googleapis.com/v1beta';
+    return String(baseUrl).replace(/\/openai\/?$/, '');
+  }
+
   return process.env.AI_EMBEDDING_BASE_URL || process.env.AI_BASE_URL || process.env.OPENAI_BASE_URL || null;
+}
+
+function resolveEmbeddingModel(provider, explicitModel) {
+  if (explicitModel) return explicitModel;
+  if (process.env.AI_EMBEDDING_MODEL) return process.env.AI_EMBEDDING_MODEL;
+  if (provider === 'gemini') return DEFAULT_GEMINI_EMBEDDING_MODEL;
+  return DEFAULT_OPENAI_EMBEDDING_MODEL;
+}
+
+function resolveEmbeddingDimensions(provider, explicitDimensions) {
+  const rawValue =
+    explicitDimensions
+    || process.env.AI_EMBEDDING_DIMENSIONS
+    || (provider === 'gemini' ? process.env.GEMINI_EMBEDDING_DIMENSIONS : process.env.OPENAI_EMBEDDING_DIMENSIONS)
+    || '';
+  const dimensions = Number.parseInt(rawValue, 10);
+  if (Number.isInteger(dimensions) && dimensions > 0) return dimensions;
+  return provider === 'gemini' ? 1536 : null;
+}
+
+function toGeminiModelName(model) {
+  return String(model || '').replace(/^models\//, '');
+}
+
+function toGeminiRequestModel(model) {
+  const modelName = toGeminiModelName(model);
+  return modelName ? `models/${modelName}` : model;
 }
 
 function normalizeMessageText(content) {
@@ -121,11 +189,11 @@ function toGeminiPayload(messages = []) {
 }
 
 export class ChatClient {
-  constructor() {
-    this.provider = normalizeProvider(process.env.AI_PROVIDER || 'openai-compatible');
-    this.apiKey = resolveChatApiKey(this.provider);
-    this.baseUrl = resolveChatBaseUrl(this.provider);
-    this.model = DEFAULT_CHAT_MODEL;
+  constructor({ provider, apiKey, baseUrl, model } = {}) {
+    this.provider = normalizeProvider(provider || process.env.AI_PROVIDER || 'openai-compatible');
+    this.apiKey = resolveChatApiKey(this.provider, apiKey);
+    this.baseUrl = resolveChatBaseUrl(this.provider, baseUrl);
+    this.model = resolveChatModel(this.provider, model);
 
     this.openai =
       this.provider === 'openai-compatible' && this.apiKey
@@ -203,7 +271,7 @@ export class ChatClient {
     }
 
     if (this.provider === 'gemini') {
-      const base = this.baseUrl.replace(/\/$/, '');
+      const base = String(this.baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
       const endpoint = `${base}/models/${encodeURIComponent(selectedModel)}:generateContent`;
       const contents = toGeminiPayload(messages);
 
@@ -295,11 +363,12 @@ export class ChatClient {
 }
 
 export class EmbeddingClient {
-  constructor() {
-    this.provider = resolveEmbeddingProvider();
-    this.apiKey = resolveEmbeddingApiKey(this.provider);
-    this.baseUrl = resolveEmbeddingBaseUrl();
-    this.model = DEFAULT_EMBEDDING_MODEL;
+  constructor({ provider, apiKey, baseUrl, model, dimensions } = {}) {
+    this.provider = resolveEmbeddingProvider(provider);
+    this.apiKey = resolveEmbeddingApiKey(this.provider, apiKey);
+    this.baseUrl = resolveEmbeddingBaseUrl(this.provider, baseUrl);
+    this.model = resolveEmbeddingModel(this.provider, model);
+    this.dimensions = resolveEmbeddingDimensions(this.provider, dimensions);
 
     this.openai =
       this.provider === 'openai-compatible' && this.apiKey
@@ -319,23 +388,90 @@ export class EmbeddingClient {
       throw new Error('Embedding provider is not configured. Set AI_EMBEDDING_API_KEY and AI_EMBEDDING_MODEL.');
     }
 
-    if (this.provider !== 'openai-compatible') {
-      throw new Error(
-        `AI_EMBEDDING_PROVIDER '${this.provider}' is not supported. Use openai-compatible for embeddings.`,
-      );
+    // OpenAI-compatible (and OpenAI) path
+    if (this.provider === 'openai-compatible') {
+      const payload = {
+        model: model || this.model,
+        input,
+      };
+
+      if (Number.isInteger(this.dimensions) && this.dimensions > 0) {
+        payload.dimensions = this.dimensions;
+      }
+
+      return this.openai.embeddings.create(payload);
     }
 
-    return this.openai.embeddings.create({
-      model: model || this.model,
-      input,
-    });
+    if (this.provider === 'gemini') {
+      const selectedModel = model || this.model;
+      const modelName = toGeminiModelName(selectedModel);
+      const requestModel = toGeminiRequestModel(selectedModel);
+      const inputs = Array.isArray(input) ? input : [input];
+      const base = String(this.baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
+      const endpoint = `${base}/models/${encodeURIComponent(modelName)}:batchEmbedContents`;
+
+      const response = await axios.post(
+        endpoint,
+        {
+          requests: inputs.map((text) => {
+            const request = {
+              model: requestModel,
+              content: {
+                parts: [{ text: String(text || '') }],
+              },
+            };
+
+            if (Number.isInteger(this.dimensions) && this.dimensions > 0) {
+              request.output_dimensionality = this.dimensions;
+            }
+
+            return request;
+          }),
+        },
+        {
+          headers: {
+            'content-type': 'application/json',
+            'x-goog-api-key': this.apiKey,
+          },
+          timeout: 60_000,
+        },
+      );
+
+      const body = response?.data || {};
+
+      if (Array.isArray(body?.data)) {
+        return body;
+      }
+
+      if (Array.isArray(body?.embeddings)) {
+        return {
+          data: body.embeddings.map((entry) => ({
+            embedding: Array.isArray(entry?.values) ? entry.values : entry?.embedding || entry,
+          })),
+          usage: body.usageMetadata || body.usage || {},
+        };
+      }
+
+      if (body?.embedding) {
+        return {
+          data: [{ embedding: body.embedding?.values || body.embedding }],
+          usage: body.usageMetadata || body.usage || {},
+        };
+      }
+
+      return { data: body?.data || [], usage: body?.usage || {} };
+    }
+
+    throw new Error(
+      `AI_EMBEDDING_PROVIDER '${this.provider}' is not supported. Supported providers: openai-compatible, gemini.`,
+    );
   }
 }
 
-export function createChatClient() {
-  return new ChatClient();
+export function createChatClient(options) {
+  return new ChatClient(options);
 }
 
-export function createEmbeddingClient() {
-  return new EmbeddingClient();
+export function createEmbeddingClient(options) {
+  return new EmbeddingClient(options);
 }

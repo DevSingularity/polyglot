@@ -3,6 +3,7 @@ import { PostgresGraphRepository } from './PostgresGraphRepository.js';
 import { Neo4jGraphRepository } from './Neo4jGraphRepository.js';
 import { pgPool } from '../connections.js';
 import { getNeo4jDriver } from './neo4jDriver.js';
+import { logger } from '../../utils/logger.js';
 
 /**
  * Creates a repository instance based on topology metrics and database availability.
@@ -14,7 +15,7 @@ import { getNeo4jDriver } from './neo4jDriver.js';
 export function createGraphRepository(topology, options = {}) {
   const { db, reasons } = selectDatabase(topology, options);
 
-  console.log(`[GraphRepositoryFactory] Selecting database: ${db}`, reasons);
+  logger.info(`[GraphRepositoryFactory] Selecting database: ${db}`, reasons);
 
   if (db === 'neo4j') {
     return new Neo4jGraphRepository({

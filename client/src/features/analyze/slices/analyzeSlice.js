@@ -189,6 +189,71 @@ export const saveRepositoryFile = createAsyncThunk(
   },
 );
 
+export const commitFile = createAsyncThunk(
+  'analyze/commitFile',
+  async (
+    { repository, path, content, sha, sourceBranch, targetBranch, branch, commitMessage, prTitle, prBody, createPullRequest } = {},
+    { rejectWithValue, getState },
+  ) => {
+    const targetRepository = resolveRepository(getState, repository);
+
+    if (!targetRepository) {
+      return rejectWithValue('Select a repository from Upload Repo first.');
+    }
+
+    if (targetRepository.source !== 'github') {
+      return rejectWithValue('Only GitHub repositories are supported in Analyze Repository view.');
+    }
+
+    try {
+      const payload = await analyzeService.commitCreatePR(targetRepository, {
+        path,
+        content,
+        sha,
+        sourceBranch,
+        targetBranch,
+        branch,
+        commitMessage,
+        prTitle,
+        prBody,
+        createPullRequest,
+      });
+
+      return payload;
+    } catch (err) {
+      return rejectWithValue(err?.response?.data?.error || err?.message || 'Failed to create PR.');
+    }
+  },
+);
+
+export const saveProtectedBranch = createAsyncThunk(
+  'analyze/saveProtectedBranch',
+  async ({ repository, path, content, sha, sourceBranch, targetBranch, commitMessage } = {}, { rejectWithValue, getState }) => {
+    const targetRepository = resolveRepository(getState, repository);
+
+    if (!targetRepository) {
+      return rejectWithValue('Select a repository from Upload Repo first.');
+    }
+
+    if (targetRepository.source !== 'github') {
+      return rejectWithValue('Only GitHub repositories are supported in Analyze Repository view.');
+    }
+
+    try {
+      return await analyzeService.saveProtectedBranch(targetRepository, {
+        path,
+        content,
+        sha,
+        sourceBranch,
+        targetBranch,
+        commitMessage,
+      });
+    } catch (err) {
+      return rejectWithValue(err?.response?.data?.error || err?.message || 'Failed to save protected branch.');
+    }
+  },
+);
+
 const analyzeSlice = createSlice({
   name: 'analyze',
   initialState: {
@@ -292,6 +357,28 @@ const analyzeSlice = createSlice({
       .addCase(saveRepositoryFile.rejected, (state, action) => {
         state.file.saveStatus = 'failed';
         state.file.saveError = action.payload || 'Could not save file changes.';
+      });
+    builder
+      .addCase(commitFile.pending, (state) => {
+        state.file.saveStatus = 'loading';
+        state.file.saveError = null;
+      })
+      .addCase(commitFile.fulfilled, (state, action) => {
+        state.file.saveStatus = 'succeeded';
+        state.file.saveError = null;
+        // Optionally update file sha if returned
+        const file = action.payload?.file;
+        if (file && state.file.data && state.file.data.path === file.path) {
+          state.file.data = {
+            ...state.file.data,
+            sha: file.sha || state.file.data.sha,
+            htmlUrl: file.htmlUrl || state.file.data.htmlUrl,
+          };
+        }
+      })
+      .addCase(commitFile.rejected, (state, action) => {
+        state.file.saveStatus = 'failed';
+        state.file.saveError = action.payload || 'Could not create PR.';
       });
   },
 });

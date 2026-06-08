@@ -1,14 +1,7 @@
-import axios from 'axios';
-
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
-
-const graphClient = axios.create({
-  baseURL:         apiBaseUrl,
-  withCredentials: true,
-  headers:         { 'Content-Type': 'application/json' },
-});
+import { apiClient as graphClient } from '../../../lib/apiClient';
 
 function resolveApiUrl(pathname) {
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
   const baseUrl = apiBaseUrl && apiBaseUrl.trim()
     ? apiBaseUrl
     : window.location.origin;

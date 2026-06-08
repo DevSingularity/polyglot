@@ -25,6 +25,7 @@ import { startAnalysisWorker } from './src/queue/analysisQueue.js';
 import { startCacheMetricsPersistence } from './src/infrastructure/cache.js';
 import { bootstrapGraphInfrastructure } from './src/infrastructure/db/startup.js';
 import { pgPool, redisClient } from './src/infrastructure/connections.js';
+import { logger } from './src/utils/logger.js';
 import { closeNeo4jDriver } from './src/infrastructure/db/neo4jDriver.js';
 
 if (process.env.SENTRY_DSN) {
@@ -47,13 +48,13 @@ let isShuttingDown = false;
 async function shutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
-  console.log(`[Shutdown] Received ${signal} — closing connections...`);
+  logger.info(`[Shutdown] Received ${signal} — closing connections...`);
   await Promise.allSettled([
-    pgPool.end().then(() => console.log('[Shutdown] Postgres pool closed')),
-    redisClient.quit().then(() => console.log('[Shutdown] Redis client closed')),
-    closeNeo4jDriver().then(() => console.log('[Shutdown] Neo4j driver closed')),
+    pgPool.end().then(() => logger.info('[Shutdown] Postgres pool closed')),
+    redisClient.quit().then(() => logger.info('[Shutdown] Redis client closed')),
+    closeNeo4jDriver().then(() => logger.info('[Shutdown] Neo4j driver closed')),
   ]);
-  console.log('[Shutdown] Done.');
+  logger.info('[Shutdown] Done.');
   process.exit(0);
 }
 
@@ -68,5 +69,5 @@ startCacheMetricsPersistence();
 
 // Listen on 0.0.0.0 so Render's internal proxy can reach the service
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Server] Running on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
+  logger.info(`[Server] Running on port ${PORT} (${process.env.NODE_ENV || 'development'})`);
 });

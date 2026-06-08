@@ -1,4 +1,5 @@
 import { IngestionAgent } from '../ingestion/IngestionAgent.js';
+import path from 'path';
 import { ScannerAgent } from '../scanner/ScannerAgent.js';
 import { PolyglotParserAgent } from '../parser/PolyglotParserAgent.js';
 import { GraphBuilderAgent } from '../graph/GraphBuilderAgent.js';
@@ -7,6 +8,7 @@ import { RelationshipExtractorAgent } from '../graph/RelationshipExtractorAgent.
 import { EnrichmentAgent } from '../enrichment/EnrichmentAgent.js';
 import { ContractInferenceAgent } from '../enrichment/ContractInferenceAgent.js';
 import { EmbeddingAgent } from '../embedding/EmbeddingAgent.js';
+import { FunctionChunker } from '../parser/FunctionChunker.js';
 import { PersistenceAgent } from '../persistence/PersistenceAgent.js';
 import { createGraphRepository } from '../../infrastructure/db/graphRepositoryFactory.js';
 // BUG 8 FIX: runMigrations() is NO LONGER called here — it runs in bootstrapGraphInfrastructure()
@@ -68,6 +70,52 @@ export class SupervisorAgent {
       agentTrace.push(scanResult);
       if (scanResult.status === 'failed') return this._abort(jobId, scanResult, agentTrace);
       Object.assign(pipelineData, scanResult.data);
+
+      // Persist directories hierarchy (if repositoryId provided)
+      try {
+        const repositoryId = input?.repositoryId || null;
+        if (repositoryId && Array.isArray(pipelineData.manifest) && pipelineData.manifest.length > 0) {
+          const dirSet = new Set();
+          for (const item of pipelineData.manifest) {
+            if (!item || !item.relativePath) continue;
+            const dir = path.posix.dirname(item.relativePath || '.') || '.';
+            if (dir && dir !== '.') {
+              // add all ancestor directories
+              let cur = dir;
+              while (cur && cur !== '.' && !dirSet.has(cur)) {
+                dirSet.add(cur);
+                const next = path.posix.dirname(cur);
+                if (!next || next === cur) break;
+                cur = next;
+              }
+            }
+          }
+
+          const dirs = [...dirSet].sort((a, b) => a.split('/').length - b.split('/').length);
+          const pathToId = new Map();
+
+          for (const dirPath of dirs) {
+            const directoryName = path.posix.basename(dirPath) || dirPath;
+            const depth = dirPath.split('/').filter(Boolean).length || 0;
+            const parentPath = dirPath.includes('/') ? dirPath.substring(0, dirPath.lastIndexOf('/')) : null;
+            const parentId = parentPath ? pathToId.get(parentPath) || null : null;
+
+            const res = await this.db.query(
+              `INSERT INTO directories (repository_id, parent_directory_id, directory_name, path, depth_level)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (repository_id, path) DO UPDATE SET directory_name = EXCLUDED.directory_name
+               RETURNING id`,
+              [repositoryId, parentId, directoryName, dirPath, depth],
+            );
+
+            if (res && res.rows && res.rows[0] && res.rows[0].id) {
+              pathToId.set(dirPath, res.rows[0].id);
+            }
+          }
+        }
+      } catch (dirErr) {
+        this.logger?.warn?.('[SupervisorAgent] Persisting directories failed:', dirErr.message);
+      }
 
       // ── 3. Parsing ──────────────────────────────────────────────────────
       await this._updateJobStatus(jobId, 'parsing');
@@ -155,6 +203,19 @@ export class SupervisorAgent {
       agentTrace.push(embeddingResult);
       Object.assign(pipelineData, embeddingResult.data);
 
+      try {
+        const chunker = new FunctionChunker();
+        const chunkStats = await chunker.run(jobId, {
+          functionNodes: pipelineData.functionNodes,
+          graph: pipelineData.graph,
+        });
+        this.logger?.info?.(
+          `[SupervisorAgent] FunctionChunker: ${chunkStats.succeeded}/${chunkStats.attempted} functions embedded`,
+        );
+      } catch (chunkErr) {
+        this.logger?.warn?.('[SupervisorAgent] FunctionChunker failed (non-fatal):', chunkErr.message);
+      }
+
       // BUG 7 FIX: Neo4jSeedAgent step REMOVED.
       // Neo4jGraphRepository.persistGraph() seeds Neo4j internally as part of step 10.
       // Postgres jobs never touch Neo4j at all.
@@ -213,7 +274,8 @@ export class SupervisorAgent {
         [dbType, jobId],
       );
     } catch (err) {
-      console.warn('[SupervisorAgent] Could not write db_type:', err.message);
+      const { logger } = await import('../../utils/logger.js');
+      logger.warn('[SupervisorAgent] Could not write db_type:', err.message);
     }
   }
 
@@ -318,7 +380,8 @@ export class SupervisorAgent {
           ],
         );
       } catch (error) {
-        console.error('[SupervisorAgent] Failed to update analysis_jobs status:', error.message);
+        const { logger } = await import('../../utils/logger.js');
+        logger.error('[SupervisorAgent] Failed to update analysis_jobs status:', error.message);
       }
     }
 
@@ -346,7 +409,8 @@ export class SupervisorAgent {
         await invalidateRepositoriesCacheForUser(this.redis, userId);
       }
     } catch (error) {
-      console.error('[SupervisorAgent] Failed to invalidate Redis caches:', error.message);
+      const { logger } = await import('../../utils/logger.js');
+      logger.error('[SupervisorAgent] Failed to invalidate Redis caches:', error.message);
     }
   }
 
@@ -359,7 +423,8 @@ export class SupervisorAgent {
 
       if (!prNumber || !owner || !repo) return;
       if (!GitHubPRService.isConfigured()) {
-        console.log('[SupervisorAgent] GitHub token not configured, skipping PR comment.');
+        const { logger } = await import('../../utils/logger.js');
+        logger.info('[SupervisorAgent] GitHub token not configured, skipping PR comment.');
         return;
       }
 
@@ -367,7 +432,8 @@ export class SupervisorAgent {
       try {
         diff = await GitHubPRService.getPRDiff(owner, repo, parseInt(prNumber, 10));
       } catch (err) {
-        console.warn('[SupervisorAgent] Could not fetch PR diff:', err.message);
+        const { logger } = await import('../../utils/logger.js');
+        logger.warn('[SupervisorAgent] Could not fetch PR diff:', err.message);
         return;
       }
 
@@ -389,7 +455,8 @@ export class SupervisorAgent {
         await GitHubPRService.postPRComment(owner, repo, parseInt(prNumber, 10), comment);
       }
 
-      console.log(`[SupervisorAgent] PR comment posted to ${owner}/${repo}#${prNumber}`);
+      const { logger } = await import('../../utils/logger.js');
+      logger.info(`[SupervisorAgent] PR comment posted to ${owner}/${repo}#${prNumber}`);
 
       if (sha) {
         const conclusion = impactedFiles.size > 10 ? 'failure' : 'neutral';
@@ -401,7 +468,8 @@ export class SupervisorAgent {
         });
       }
     } catch (err) {
-      console.error('[SupervisorAgent] Failed to post PR comment:', err.message);
+      const { logger } = await import('../../utils/logger.js');
+      logger.error('[SupervisorAgent] Failed to post PR comment:', err.message);
     }
   }
 
