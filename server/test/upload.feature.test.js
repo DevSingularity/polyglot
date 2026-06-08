@@ -7,21 +7,23 @@ import cookieParser from 'cookie-parser';
 // Mock dependencies before importing the router
 vi.mock('../src/analyze/upload/upload.service.js', () => ({
   createOrGetRepository: vi.fn(async () => 'repo-123'),
-  createAnalysisJob: vi.fn(async () => 'job-456'),
+  createAnalysisJob:     vi.fn(async () => 'job-456'),
+  createUploadRecord:    vi.fn(async () => ({ repositoryId: 'repo-123', jobId: 'job-456' })),
 }));
 vi.mock('../src/queue/analysisQueue.js', () => ({ enqueueAnalysisJob: vi.fn(async () => true) }));
 vi.mock('../src/infrastructure/cache.js', () => ({
   invalidateAnalysisHistoryCacheForUser: vi.fn(async () => {}),
-  invalidateRepositoriesCacheForUser: vi.fn(async () => {}),
+  invalidateRepositoriesCacheForUser:    vi.fn(async () => {}),
 }));
 vi.mock('../src/utils/authUser.js', () => ({
-  getAuthUser: () => ({ id: 'auth-1' }),
-  resolveDatabaseUserId: async () => 'db-user-id',
+  getAuthUser:            () => ({ id: 'auth-1' }),
+  resolveDatabaseUserId:  async () => 'db-user-id',
+  getGitHubToken:         () => null,
 }));
 
 import analyzeRouter from '../src/analyze/routes/analyze.routes.js';
 import { enqueueAnalysisJob } from '../src/queue/analysisQueue.js';
-import { createAnalysisJob } from '../src/analyze/upload/upload.service.js';
+import { createUploadRecord } from '../src/analyze/upload/upload.service.js';
 
 describe('upload analyze flow', () => {
   let app;
@@ -64,8 +66,7 @@ describe('upload analyze flow', () => {
     const body = await res.json();
     expect(body.jobId).toBe('job-456');
 
-    // ensure underlying queue and job creator were invoked
     expect(enqueueAnalysisJob).toHaveBeenCalled();
-    expect(createAnalysisJob).toHaveBeenCalled();
+    expect(createUploadRecord).toHaveBeenCalled();
   });
 });

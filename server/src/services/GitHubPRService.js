@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { logger } from '../utils/logger.js';
 
 /**
  * GitHub PR Service
@@ -200,7 +201,7 @@ ${impactedList}
       const comment = response.data.find((c) => c.body.includes('PolyGlot Impact Analysis'));
       return comment ? { id: comment.id } : null;
     } catch (err) {
-      console.error('Failed to find existing comment:', err.message);
+      logger.error('Failed to find existing comment:', err.message);
       return null;
     }
   }
@@ -259,7 +260,7 @@ ${impactedList}
         conclusion: response.data.conclusion,
       };
     } catch (err) {
-      console.error('Failed to create check run:', err.message);
+      logger.error('Failed to create check run:', err.message);
       return null;
     }
   }

@@ -30,6 +30,8 @@ function verifySignature(payloadBuffer, signatureHeader, secret) {
   return timingSafeCompare(signatureHeader, expected);
 }
 
+import { logger } from '../../utils/logger.js';
+
 function logWebhookEvent(level, message, context = {}) {
   const timestamp = new Date().toISOString();
   const logContext = {
@@ -39,11 +41,11 @@ function logWebhookEvent(level, message, context = {}) {
   };
 
   if (level === 'error') {
-    console.error(`[webhook:error] ${message}`, logContext);
+    logger.error(`[webhook:error] ${message}`, logContext);
   } else if (level === 'warn') {
-    console.warn(`[webhook:warn] ${message}`, logContext);
+    logger.warn(`[webhook:warn] ${message}`, logContext);
   } else {
-    console.log(`[webhook:info] ${message}`, logContext);
+    logger.info(`[webhook:info] ${message}`, logContext);
   }
 }
 

@@ -76,3 +76,7 @@ export async function resolveDatabaseUserId(authUser) {
 
   return upserted.rows[0]?.id || null;
 }
+
+export function getGitHubToken(req) {
+  return req.cookies?.github_token || null;
+}

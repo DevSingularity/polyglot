@@ -1,12 +1,4 @@
-import axios from 'axios';
-
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
-
-const dashboardClient = axios.create({
-  baseURL: apiBaseUrl,
-  withCredentials: true,
-  headers: { 'Content-Type': 'application/json' },
-});
+import { apiClient } from '../../../lib/apiClient';
 
 const normalizeRepository = (raw) => {
   const source = String(raw?.source ?? raw?.analysisSource ?? 'unknown').toLowerCase();
@@ -102,7 +94,7 @@ const normalizePayload = (payload) => {
 
 export const dashboardService = {
   async getAnalyzedRepositories({ userId, page = 1, limit = 25 } = {}) {
-    const { data } = await dashboardClient.get('/api/repositories', {
+    const { data } = await apiClient.get('/api/repositories', {
       params: {
         page,
         limit,
@@ -113,7 +105,7 @@ export const dashboardService = {
   },
 
   async getRepositoryJobs({ repositoryId, page = 1, limit = 20 } = {}) {
-    const { data } = await dashboardClient.get(`/api/repositories/${repositoryId}/jobs`, {
+    const { data } = await apiClient.get(`/api/repositories/${repositoryId}/jobs`, {
       params: { page, limit },
     });
 
@@ -139,7 +131,7 @@ export const dashboardService = {
   },
 
   async toggleStar(repositoryId) {
-    const { data } = await dashboardClient.patch(`/api/repositories/${repositoryId}/star`);
+    const { data } = await apiClient.patch(`/api/repositories/${repositoryId}/star`);
     return {
       id: data?.id,
       isStarred: data?.isStarred ?? data?.is_starred ?? false,
@@ -147,7 +139,7 @@ export const dashboardService = {
   },
 
   async getCacheMetrics() {
-    const { data } = await dashboardClient.get('/api/repositories/cache/metrics');
+    const { data } = await apiClient.get('/api/repositories/cache/metrics');
 
     return {
       metrics: {

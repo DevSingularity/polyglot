@@ -1,12 +1,4 @@
-import axios from 'axios';
-
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
-
-const analyzeClient = axios.create({
-  baseURL: apiBaseUrl,
-  withCredentials: true,
-  headers: { 'Content-Type': 'application/json' },
-});
+import { apiClient } from '../../../lib/apiClient';
 
 function buildRepoParams(repository, extra = {}) {
   const params = {
@@ -30,7 +22,7 @@ function buildRepoParams(repository, extra = {}) {
 
 export const analyzeService = {
   async getRepositoryStructure(repository) {
-    const { data } = await analyzeClient.get('/api/analyze/github/structure', {
+    const { data } = await apiClient.get('/api/analyze/github/structure', {
       params: buildRepoParams(repository),
     });
 
@@ -43,7 +35,7 @@ export const analyzeService = {
   },
 
   async getDirectoryContents(repository, path = '') {
-    const { data } = await analyzeClient.get('/api/analyze/github/contents', {
+    const { data } = await apiClient.get('/api/analyze/github/contents', {
       params: buildRepoParams(repository, {
         path: String(path || '').trim(),
       }),
@@ -57,7 +49,7 @@ export const analyzeService = {
   },
 
   async getFileContent(repository, path = '') {
-    const { data } = await analyzeClient.get('/api/analyze/github/file', {
+    const { data } = await apiClient.get('/api/analyze/github/file', {
       params: buildRepoParams(repository, {
         path: String(path || '').trim(),
       }),
@@ -71,7 +63,7 @@ export const analyzeService = {
   },
 
   async saveFileContent(repository, { path, content, sha, message }) {
-    const { data } = await analyzeClient.put('/api/analyze/github/file', {
+    const { data } = await apiClient.put('/api/analyze/github/file', {
       ...buildRepoParams(repository),
       path: String(path || '').trim(),
       content: String(content ?? ''),
@@ -99,7 +91,7 @@ export const analyzeService = {
       createPullRequest,
     };
 
-    const { data } = await analyzeClient.post('/api/analyze/commit', payload);
+    const { data } = await apiClient.post('/api/analyze/commit', payload);
     return data;
   },
 
@@ -115,7 +107,7 @@ export const analyzeService = {
       createPullRequest: false,
     };
 
-    const { data } = await analyzeClient.post('/api/analyze/commit', payload);
+    const { data } = await apiClient.post('/api/analyze/commit', payload);
     return data;
   },
 };

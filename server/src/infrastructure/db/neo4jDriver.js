@@ -44,7 +44,8 @@ export async function verifyNeo4jConnectivity() {
     await driver.verifyConnectivity();
     return true;
   } catch (err) {
-    console.error('[Neo4jDriver] Connectivity verification failed:', err.message);
+    const { logger } = await import('../utils/logger.js');
+    logger.error('[Neo4jDriver] Connectivity verification failed:', err.message);
     return false;
   }
 }

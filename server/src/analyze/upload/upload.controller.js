@@ -4,9 +4,9 @@ import {
   invalidateRepositoriesCacheForUser,
 } from '../../infrastructure/cache.js';
 import { enqueueAnalysisJob } from '../../queue/analysisQueue.js';
-import { getAuthUser, resolveDatabaseUserId } from '../../utils/authUser.js';
+import { getAuthUser, resolveDatabaseUserId, getGitHubToken } from '../../utils/authUser.js';
 import { buildRepositoryIdentity } from '../shared/repoIdentity.js';
-import { createAnalysisJob, createOrGetRepository } from './upload.service.js';
+import { createUploadRecord } from './upload.service.js';
 
 export async function analyzeController(req, res, next) {
   try {
@@ -25,22 +25,10 @@ export async function analyzeController(req, res, next) {
     }
 
     const repository = buildRepositoryIdentity(req.body);
-    const repositoryId = await createOrGetRepository({ userId, repository });
+    const { repositoryId, jobId } = await createUploadRecord({ userId, repository });
 
-    if (!repositoryId) {
-      const err = new Error('Failed to resolve repository record for analysis job.');
-      err.statusCode = 500;
-      throw err;
-    }
-
-    const jobId = await createAnalysisJob({
-      repositoryId,
-      userId,
-      branch: repository.branch,
-    });
-
-    if (!jobId) {
-      const err = new Error('Failed to create analysis job.');
+    if (!repositoryId || !jobId) {
+      const err = new Error('Failed to create repository and analysis job.');
       err.statusCode = 500;
       throw err;
     }
@@ -49,10 +37,7 @@ export async function analyzeController(req, res, next) {
       ...req.body,
       repositoryId,
       userId,
-      githubToken: req.cookies?.github_token,
-      // optional forcing source for manual testing
-      // forceNeo4j: true,
-      // forcePostgres: true,
+      githubToken: getGitHubToken(req),
     };
 
     await enqueueAnalysisJob({

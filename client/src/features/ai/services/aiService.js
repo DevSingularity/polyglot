@@ -1,18 +1,11 @@
-import axios from 'axios';
-
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
-
-const aiClient = axios.create({
-  baseURL: apiBaseUrl,
-  withCredentials: true,
-  headers: { 'Content-Type': 'application/json' },
-});
+import { apiClient } from '../../../lib/apiClient';
 
 function normalizeText(value) {
   return String(value || '').trim();
 }
 
 function resolveApiUrl(pathname) {
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
   const trimmedBase = apiBaseUrl.trim();
 
   if (!trimmedBase) return pathname;
@@ -38,7 +31,7 @@ function buildExplainQuestion({ filePath, nodeLabel, question }) {
 }
 
 async function postQuery({ question, jobId }) {
-  const { data } = await aiClient.post('/api/ai/query', { question, jobId });
+  const { data } = await apiClient.post('/api/ai/query', { question, jobId });
   return data;
 }
 
@@ -89,10 +82,7 @@ async function readSseStream(response, { onChunk, onDone, onError } = {}) {
             onChunk?.(parsed.text);
           }
         } catch (error) {
-          if (error instanceof SyntaxError) {
-            continue;
-          }
-
+          if (error instanceof SyntaxError) continue;
           throw error;
         }
       }
@@ -128,7 +118,7 @@ export const aiService = {
     const normalizedJobId = normalizeText(jobId);
     if (normalizedJobId) params.jobId = normalizedJobId;
 
-    const { data } = await aiClient.get('/api/ai/queries', { params });
+    const { data } = await apiClient.get('/api/ai/queries', { params });
     return {
       queries: Array.isArray(data?.queries) ? data.queries : [],
       page: Number.isFinite(data?.page) ? data.page : params.page,
@@ -161,7 +151,7 @@ export const aiService = {
       throw new Error('analyzeImpact requires jobId and filePath.');
     }
 
-    const { data } = await aiClient.post('/api/ai/impact', {
+    const { data } = await apiClient.post('/api/ai/impact', {
       jobId: normalizedJobId,
       filePath: normalizedFilePath,
     });
@@ -187,7 +177,7 @@ export const aiService = {
     if (Number.isInteger(lineStart) && lineStart > 0) payload.lineStart = lineStart;
     if (Number.isInteger(lineEnd) && lineEnd > 0) payload.lineEnd = lineEnd;
 
-    const { data } = await aiClient.post('/api/ai/snippet-impact', payload, {
+    const { data } = await apiClient.post('/api/ai/snippet-impact', payload, {
       signal,
     });
     return data;
@@ -201,7 +191,7 @@ export const aiService = {
       throw new Error('suggestRefactor requires jobId and filePath.');
     }
 
-    const { data } = await aiClient.post('/api/ai/suggest-refactor', {
+    const { data } = await apiClient.post('/api/ai/suggest-refactor', {
       jobId: normalizedJobId,
       filePath: normalizedFilePath,
     });
@@ -238,9 +228,7 @@ export const aiService = {
       try {
         const payload = await response.json();
         if (payload?.error) message = payload.error;
-      } catch {
-        // Ignore JSON parsing failures and keep the fallback message.
-      }
+      } catch { /* keep fallback message */ }
 
       const error = new Error(message);
       onError?.(error);
@@ -289,11 +277,7 @@ export const aiService = {
               onChunk?.(parsed.text);
             }
           } catch (error) {
-            if (error instanceof SyntaxError) {
-              // Ignore malformed stream chunks and continue receiving valid chunks.
-              continue;
-            }
-
+            if (error instanceof SyntaxError) continue;
             throw error;
           }
         }
@@ -301,10 +285,7 @@ export const aiService = {
 
       onDone?.();
     } catch (error) {
-      if (error?.name === 'AbortError') {
-        return;
-      }
-
+      if (error?.name === 'AbortError') return;
       onError?.(error);
       throw error;
     } finally {
@@ -347,9 +328,7 @@ export const aiService = {
       try {
         const payload = await response.json();
         if (payload?.error) message = payload.error;
-      } catch {
-        // Ignore JSON parsing failures and keep the fallback message.
-      }
+      } catch { /* keep fallback message */ }
 
       const error = new Error(message);
       onError?.(error);
@@ -366,12 +345,12 @@ export const aiService = {
   },
 
   async getConversations({ jobId }) {
-    const { data } = await aiClient.get('/api/ai/conversations', { params: { jobId } });
+    const { data } = await apiClient.get('/api/ai/conversations', { params: { jobId } });
     return data;
   },
 
   async getConversationMessages({ conversationId }) {
-    const { data } = await aiClient.get(`/api/ai/conversations/${conversationId}/messages`);
+    const { data } = await apiClient.get(`/api/ai/conversations/${conversationId}/messages`);
     return data;
   },
 };

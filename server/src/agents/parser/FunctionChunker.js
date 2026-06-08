@@ -1,5 +1,6 @@
 import { pgPool } from '../../infrastructure/connections.js';
 import { createEmbeddingClient } from '../../services/ai/llmProvider.js';
+import { logger } from '../../utils/logger.js';
 
 const BATCH_SIZE = 50;
 
@@ -21,7 +22,7 @@ export class FunctionChunker {
     if (!jobId) throw new Error('jobId is required');
 
     if (!this.embeddingClient?.isConfigured?.()) {
-      console.warn('[FunctionChunker] Embedding client not configured; skipping.');
+      logger.warn('[FunctionChunker] Embedding client not configured; skipping.');
       return { attempted: 0, succeeded: 0, failed: 0 };
     }
 
@@ -113,7 +114,7 @@ export class FunctionChunker {
           succeeded += 1;
         }
       } catch (error) {
-        console.error('[FunctionChunker] batch error:', error.message);
+        logger.error('[FunctionChunker] batch error:', error.message);
         failed += batch.length;
       }
     }

@@ -1,6 +1,8 @@
+import { getGitHubToken } from '../../utils/authUser.js';
+
 export async function createPrCommitController(req, res, next) {
   try {
-    const token = req.cookies?.github_token;
+    const token = getGitHubToken(req);
     if (!token) {
       const err = new Error('GitHub authentication required to create a PR.');
       err.statusCode = 401;

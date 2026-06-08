@@ -1,4 +1,5 @@
 import { Queue, Worker } from 'bullmq';
+import { logger } from '../utils/logger.js';
 import { SupervisorAgent } from '../agents/core/SupervisorAgent.js';
 import { pgPool, redisClient } from '../infrastructure/connections.js';
 
@@ -22,9 +23,11 @@ function buildWorker() {
   const worker = new Worker(
     'code-analysis',
     async (job) => {
+      const jobLogger = logger.child({ jobId: job.data.jobId });
       const supervisor = new SupervisorAgent({
         db: pgPool,
         redis: redisClient,
+        logger: jobLogger,
       });
 
       return supervisor.runPipeline(job.data.jobId, job.data.input);
@@ -36,7 +39,17 @@ function buildWorker() {
   );
 
   worker.on('failed', (job, err) => {
-    console.error(`[Queue] Job ${job?.id} failed:`, err.message);
+    logger.error({
+      jobId: job?.id,
+      input: job?.data?.input ? { source: job.data.input.source } : null,
+      error: err.message,
+      stack: err.stack,
+      attemptsMade: job?.attemptsMade,
+    }, 'analysis_job_failed');
+  });
+
+  worker.on('completed', (job) => {
+    logger.info({ jobId: job.id }, 'analysis_job_completed');
   });
 
   return worker;

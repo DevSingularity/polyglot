@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { BaseAgent } from '../core/BaseAgent.js';
 import { pgPool, redisClient } from '../../infrastructure/connections.js';
+import { logger } from '../../utils/logger.js';
 import { createChatClient, createEmbeddingClient } from '../../services/ai/llmProvider.js';
 import { GraphRagExpander } from './GraphRagExpander.js';
 
@@ -492,7 +493,7 @@ if (this.embeddingClient.isConfigured()) {
            VALUES ($1, 'assistant', $2, $3::jsonb, $4)`,
           [activeConversationId, fullText, JSON.stringify(sourcePaths), confidence],
         ),
-      ]).catch((error) => console.error('[ChatAgent] turn persistence failed:', error.message));
+      ]).catch((error) => logger.error('[ChatAgent] turn persistence failed:', error.message));
     }
 
     // Guard before cache write:

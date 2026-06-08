@@ -1,4 +1,4 @@
-import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
+import { createSlice, createAsyncThunk, createSelector } from '@reduxjs/toolkit';
 import { dashboardService } from '../services/dashboardService';
 
 export const fetchAnalyzedRepositories = createAsyncThunk(
@@ -217,13 +217,31 @@ const dashboardSlice = createSlice({
   },
 });
 
+const selectDashboard = (state) => state.dashboard;
+
 export const selectDashboardStatus = (state) => state.dashboard.status;
 export const selectDashboardError = (state) => state.dashboard.error;
-export const selectAnalyzedRepositories = (state) => state.dashboard.repositories;
+export const selectAnalyzedRepositories = createSelector(
+  selectDashboard,
+  (dashboard) => dashboard.repositories,
+);
 export const selectDashboardSummary = (state) => state.dashboard.summary;
 export const selectRepositoryJobsById = (state) => state.dashboard.repositoryJobsById;
 export const selectDashboardCacheMetrics = (state) => state.dashboard.cacheMetrics;
 export const selectDashboardCacheMetricsStatus = (state) => state.dashboard.cacheMetricsStatus;
 export const selectDashboardCacheMetricsError = (state) => state.dashboard.cacheMetricsError;
+
+export const selectFilteredRepositories = createSelector(
+  selectAnalyzedRepositories,
+  (_, searchTerm) => searchTerm,
+  (repositories, searchTerm) =>
+    searchTerm
+      ? repositories.filter((r) => {
+          const query = searchTerm.trim().toLowerCase();
+          const target = `${r.fullName || ''} ${r.name || ''}`.toLowerCase();
+          return target.includes(query);
+        })
+      : repositories,
+);
 
 export default dashboardSlice.reducer;

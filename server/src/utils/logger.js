@@ -1,21 +1,26 @@
-export function requestLogger(req, res, next) {
-  const start  = Date.now();
-  const { method, originalUrl } = req;
-  const isDev  = process.env.NODE_ENV !== 'production';
+import pino from 'pino';
 
-  if (isDev) {
-    process.stdout.write(`→ ${method} ${originalUrl}\n`);
-  }
+export const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  ...(process.env.NODE_ENV === 'development'
+    ? { transport: { target: 'pino-pretty' } }
+    : {}),
+});
+
+export default logger;
+
+export function requestLogger(req, res, next) {
+  const start = Date.now();
+  const { method, originalUrl } = req;
 
   res.on('finish', () => {
-    const ms     = Date.now() - start;
+    const ms = Date.now() - start;
     const status = res.statusCode;
 
-    if (isDev || status >= 400) {
-      const line = `← ${method} ${originalUrl} ${status} (${ms}ms)`;
-      if (status >= 500)      process.stderr.write(`[error] ${line}\n`);
-      else if (status >= 400) process.stderr.write(`[warn]  ${line}\n`);
-      else                    process.stdout.write(`        ${line}\n`);
+    if (status >= 400) {
+      logger.warn({ method, url: originalUrl, status, ms }, 'request completed with error');
+    } else {
+      logger.info({ method, url: originalUrl, status, ms }, 'request completed');
     }
   });
 

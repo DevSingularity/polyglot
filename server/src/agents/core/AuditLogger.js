@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { logger } from '../../utils/logger.js';
 
 function normalizeConfidence(confidence) {
 	const value = Number(confidence);
@@ -35,12 +36,12 @@ export class AuditLogger {
 		processingTimeMs = 0,
 	} = {}) {
 		if (!this.db || typeof this.db.query !== 'function') {
-			console.warn('[AuditLogger] No database client configured; skipping audit log write');
+			logger.warn('[AuditLogger] No database client configured; skipping audit log write');
 			return null;
 		}
 
 		if (!jobId || !agentId) {
-			console.warn('[AuditLogger] Missing required fields (jobId/agentId); skipping audit log write');
+			logger.warn('[AuditLogger] Missing required fields (jobId/agentId); skipping audit log write');
 			return null;
 		}
 
@@ -78,7 +79,7 @@ export class AuditLogger {
 			const result = await this.db.query(sql, values);
 			return result.rows?.[0] ?? null;
 		} catch (error) {
-			console.error('[AuditLogger] Failed to write audit log:', error.message);
+			logger.error('[AuditLogger] Failed to write audit log:', error.message);
 			return null;
 		}
 	}

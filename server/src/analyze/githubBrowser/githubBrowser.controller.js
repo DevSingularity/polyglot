@@ -9,10 +9,11 @@ import {
   resolvePublicRepository,
   updateRepoFileContent,
 } from '../services/githubApi.service.js';
+import { getGitHubToken } from '../../utils/authUser.js';
 
 function resolveRepoFromQuery(req) {
   const source = req.query.source === 'owned' ? 'owned' : 'public';
-  const token = source === 'owned' ? req.cookies?.github_token : undefined;
+  const token = source === 'owned' ? getGitHubToken(req) : undefined;
 
   const owner = typeof req.query.owner === 'string' ? req.query.owner.trim() : '';
   const repo = typeof req.query.repo === 'string' ? req.query.repo.trim() : '';
@@ -53,7 +54,7 @@ export async function resolvePublicRepoController(req, res, next) {
 
 export async function listOwnedReposController(req, res, next) {
   try {
-    const result = await fetchOwnedRepositories({ token: req.cookies?.github_token });
+    const result = await fetchOwnedRepositories({ token: getGitHubToken(req) });
     return res.status(200).json({
       repositories: result.repositories,
       scopes: result.scopes,
@@ -265,7 +266,7 @@ export async function getRepositoryFileController(req, res, next) {
 export async function updateRepositoryFileController(req, res, next) {
   try {
     const source = req.body.source === 'owned' ? 'owned' : 'public';
-    const token = source === 'owned' ? req.cookies?.github_token : undefined;
+    const token = source === 'owned' ? getGitHubToken(req) : undefined;
 
     let targetOwner = req.body.owner || '';
     let targetRepo = req.body.repo || '';
