@@ -111,6 +111,70 @@ test('POST /api/ai/snippet-impact validates required fields', async () => {
   }
 });
 
+test('POST /api/ai/snippet-impact returns an empty success payload when the graph is missing', async () => {
+  const userId = '4d0aa1ee-7350-4f8f-8c19-4af3f7b3df2f';
+  const repositoryId = 'ce81b2ce-7e0a-4f47-b4ff-f6f0dd67e8fd';
+  const jobId = 'a6f6d1e1-5e0d-4b3d-a7f6-6f6f2dba3a6d';
+  const token = jwt.sign({ id: userId, username: 'snippet-user-graph-missing' }, process.env.JWT_SECRET, {
+    expiresIn: '1h',
+  });
+
+  await pgPool.query(
+    `
+      INSERT INTO users (id, username, email)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (id) DO NOTHING
+    `,
+    [userId, 'snippet-user-graph-missing', 'snippet-graph-missing@example.com'],
+  );
+
+  await pgPool.query(
+    `
+      INSERT INTO repositories (id, owner_id, source, full_name)
+      VALUES ($1, $2, 'local', 'snippet/graph-missing')
+      ON CONFLICT DO NOTHING
+    `,
+    [repositoryId, userId],
+  );
+
+  await pgPool.query(
+    `
+      INSERT INTO analysis_jobs (id, repository_id, user_id, status)
+      VALUES ($1, $2, $3, 'completed')
+      ON CONFLICT (id) DO NOTHING
+    `,
+    [jobId, repositoryId, userId],
+  );
+
+  try {
+    const response = await fetch(`${baseUrl}/api/ai/snippet-impact`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        jobId,
+        filePath: 'src/missing.js',
+        snippet: 'export const x = 1;',
+        lineStart: 1,
+        lineEnd: 1,
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.confidence, '0%');
+    assert.deepEqual(payload.impactedNodes, []);
+    assert.deepEqual(payload.transitivelyImpactedFiles, []);
+    assert.equal(payload.notice, 'No analysis could be performed on the provided snippet yet.');
+  } finally {
+    await pgPool.query('DELETE FROM analysis_jobs WHERE id = $1', [jobId]);
+    await pgPool.query('DELETE FROM repositories WHERE id = $1', [repositoryId]);
+    await pgPool.query('DELETE FROM users WHERE id = $1', [userId]);
+  }
+});
+
 test('POST /api/ai/snippet-impact returns 503 when AI provider is not configured', async () => {
   const userId = '9db9aabd-6818-445a-a361-6203c2f39c85';
   const repositoryId = 'dc9e2364-7a26-4f3f-9496-9f9070ec748f';

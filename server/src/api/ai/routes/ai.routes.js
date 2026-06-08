@@ -469,8 +469,21 @@ router.post('/snippet-impact', async (req, res, next) => {
 
     if (result.status === 'failed') {
       const statusCode = Number(result.errors?.[0]?.code) || 400;
+      if (statusCode === 404) {
+        return res.status(200).json({
+          whatItDoes: null,
+          fileImpact: null,
+          codebaseImpact: null,
+          confidence: '0%',
+          confidenceScore: 0,
+          impactedNodes: [],
+          transitivelyImpactedFiles: [],
+          notice: 'No analysis could be performed on the provided snippet yet.',
+        });
+      }
+
       return res.status(statusCode).json({
-        error:   result.errors?.[0]?.message || 'Unable to analyze snippet impact.',
+        error: result.errors?.[0]?.message || 'Unable to analyze snippet impact.',
         details: result.errors || [],
       });
     }

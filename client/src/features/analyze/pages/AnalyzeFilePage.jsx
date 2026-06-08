@@ -29,7 +29,6 @@ import { Button } from '@/components/ui/button';
 import {
   fetchRepositoryFile,
   fetchRepositoryStructure,
-  saveRepositoryFile,
   saveProtectedBranch,
   selectAnalyzeFile,
   selectAnalyzeSelectedRepository,
@@ -104,10 +103,32 @@ function buildRepoStorageKey(repository) {
 function buildBranchSlug(filePath = '') {
   return String(filePath || '')
     .toLowerCase()
-    .replace(/[^a-z0-9._/-]+/g, '-')
+    .replace(/[\\/]+/g, '-')
+    .replace(/[^a-z0-9._-]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
+    .replace(/^\.+/, '')
     .slice(0, 48) || 'file';
+}
+
+function ProtectMainToggle({ id, checked, onChange, className = '' }) {
+  return (
+    <>
+      <input
+        type="checkbox"
+        className="peer sr-only opacity-0"
+        id={id}
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <label
+        htmlFor={id}
+        className={`relative flex h-6 w-11 cursor-pointer items-center rounded-full border border-border/60 bg-muted/80 px-0.5 transition-colors before:h-5 before:w-5 before:rounded-full before:bg-background before:shadow-sm before:transition-transform before:duration-300 peer-checked:bg-emerald-500 peer-checked:before:translate-x-full peer-focus-visible:ring-2 peer-focus-visible:ring-emerald-500 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background ${className}`}
+      >
+        <span className="sr-only">Enable</span>
+      </label>
+    </>
+  );
 }
 
 export default function AnalyzeFilePage() {
@@ -147,7 +168,7 @@ export default function AnalyzeFilePage() {
   const [createPrBranchesLoading, setCreatePrBranchesLoading] = useState(false);
   const [createPrBranchesError, setCreatePrBranchesError] = useState('');
   const [isProtectSaveModalOpen, setIsProtectSaveModalOpen] = useState(false);
-  const [protectMain, setProtectMain] = useState(false);
+  const [protectMain, setProtectMain] = useState(true);
   const [protectSaveState, setProtectSaveState] = useState({
     baseBranch: '',
     newBranchName: '',
@@ -234,9 +255,10 @@ export default function AnalyzeFilePage() {
 
     try {
       const stored = window.localStorage.getItem(protectMainStorageKey);
+      if (stored === null) return;
       setProtectMain(stored === '1');
     } catch {
-      setProtectMain(false);
+      setProtectMain(true);
     }
   }, [protectMainStorageKey]);
 
@@ -347,32 +369,19 @@ export default function AnalyzeFilePage() {
   const handleSaveFile = async () => {
     if (!fileState.data?.path || !fileState.data?.sha) return;
 
-    if (protectMain) {
-      const baseBranch = selectedRepository.defaultBranch || selectedRepository.branch || 'main';
-      const existingOptions = createPrBranches.filter(Boolean);
-      const fallbackBase = existingOptions.includes(baseBranch) ? baseBranch : existingOptions[0] || baseBranch;
+    const baseBranch = selectedRepository.defaultBranch || selectedRepository.branch || 'main';
+    const existingOptions = createPrBranches.filter(Boolean);
+    const fallbackBase = existingOptions.includes(baseBranch) ? baseBranch : existingOptions[0] || baseBranch;
 
-      setProtectSaveState({
-        baseBranch: fallbackBase,
-        newBranchName: `protect-${buildBranchSlug(fileState.data.path)}-${Date.now()}`,
-        commitMessage: `Update ${fileState.data.path} via PolyGlot`,
-        isSubmitting: false,
-        error: '',
-      });
-      setIsProtectSaveModalOpen(true);
-      return;
-    }
-
-    await dispatch(
-      saveRepositoryFile({
-        path: fileState.data.path,
-        content: editorValue,
-        sha: fileState.data.sha,
-        message: `Update ${fileState.data.path} via PolyGlot editor`,
-      }),
-    );
-
-    setIsEditing(false);
+    setProtectSaveState({
+      baseBranch: fallbackBase,
+      newBranchName: `protect-${buildBranchSlug(fileState.data.path)}-${Date.now()}`,
+      commitMessage: `Update ${fileState.data.path} via PolyGlot`,
+      isSubmitting: false,
+      error: '',
+    });
+    setIsProtectSaveModalOpen(true);
+    return;
   };
 
   const handleSubmitProtectedSave = async () => {
@@ -382,30 +391,44 @@ export default function AnalyzeFilePage() {
     const baseBranch = String(protectSaveState.baseBranch || '').trim() || selectedRepository.defaultBranch || selectedRepository.branch || 'main';
     const newBranchName = String(protectSaveState.newBranchName || '').trim();
 
-    if (!newBranchName) {
-      setProtectSaveState((prev) => ({ ...prev, isSubmitting: false, error: 'Choose a branch name before saving.' }));
-      return;
-    }
-
-    if (newBranchName.toLowerCase() === 'main') {
-      setProtectSaveState((prev) => ({ ...prev, isSubmitting: false, error: 'The new branch cannot be named main.' }));
-      return;
-    }
-
     setProtectSaveState((prev) => ({ ...prev, isSubmitting: true, error: '' }));
 
     try {
-      await dispatch(
-        saveProtectedBranch({
-          repository: selectedRepository,
-          path: selectedFilePath,
-          content: currentContent,
-          sha: fileState.data?.sha || undefined,
-          sourceBranch: newBranchName,
-          targetBranch: baseBranch,
-          commitMessage: protectSaveState.commitMessage,
-        }),
-      ).unwrap();
+      if (protectMain) {
+        if (!newBranchName) {
+          setProtectSaveState((prev) => ({ ...prev, isSubmitting: false, error: 'Choose a branch name before saving.' }));
+          return;
+        }
+
+        if (newBranchName.toLowerCase() === 'main') {
+          setProtectSaveState((prev) => ({ ...prev, isSubmitting: false, error: 'The new branch cannot be named main.' }));
+          return;
+        }
+
+        await dispatch(
+          saveProtectedBranch({
+            repository: selectedRepository,
+            path: selectedFilePath,
+            content: currentContent,
+            sha: fileState.data?.sha || undefined,
+            sourceBranch: newBranchName,
+            targetBranch: baseBranch,
+            commitMessage: protectSaveState.commitMessage,
+          }),
+        ).unwrap();
+      } else {
+        await dispatch(
+          saveProtectedBranch({
+            repository: selectedRepository,
+            path: selectedFilePath,
+            content: currentContent,
+            sha: fileState.data?.sha || undefined,
+            sourceBranch: newBranchName || `protect-${buildBranchSlug(selectedFilePath)}-${Date.now()}`,
+            targetBranch: baseBranch,
+            commitMessage: protectSaveState.commitMessage || `Update ${selectedFilePath} via PolyGlot editor`,
+          }),
+        ).unwrap();
+      }
 
       setIsProtectSaveModalOpen(false);
       setIsEditing(false);
@@ -422,14 +445,15 @@ export default function AnalyzeFilePage() {
     if (!selectedRepository || !selectedFilePath) return;
 
     const defaultTarget = selectedRepository.defaultBranch || selectedRepository.branch || 'main';
-    const sanitizedName = selectedFilePath.replace(/[^a-z0-9._/-]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 48) || 'file';
+    const sanitizedName = buildBranchSlug(selectedFilePath);
+    const sourceBranch = `${defaultTarget}-polyglot-${sanitizedName}`;
 
     setCreatePrState({
-      sourceBranch: `${defaultTarget}-polyglot-${sanitizedName}`,
+      sourceBranch,
       targetBranch: defaultTarget,
       commitMessage: `Update ${selectedFilePath} via PolyGlot`,
       prTitle: `Update ${selectedFilePath}`,
-      prBody: `This PR updates ${selectedFilePath} via PolyGlot.\n\n- Source branch: ${defaultTarget}-polyglot-${sanitizedName}\n- Target branch: ${defaultTarget}`,
+      prBody: `This PR updates ${selectedFilePath} via PolyGlot.\n\n- Source branch: ${sourceBranch}\n- Target branch: ${defaultTarget}`,
       isSubmitting: false,
       error: '',
     });
@@ -1054,19 +1078,15 @@ export default function AnalyzeFilePage() {
                 <ExternalLink className="size-3.5" />
               </a>
             )}
-            <button
-              type="button"
-              aria-pressed={protectMain}
-              onClick={() => setProtectMain((prev) => !prev)}
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-[11px] font-semibold tracking-[0.14em] transition-all ${protectMain
-                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700'
-                  : 'border-border/50 bg-background/55 text-muted-foreground hover:text-foreground'
-                }`}
-              title="Protect main"
-            >
-              Protect main
-              <span className={`size-2 rounded-full ${protectMain ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`} />
-            </button>
+            <div className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-background/55 px-3 py-1.5">
+              <span className="text-[11px] font-semibold tracking-[0.14em] text-muted-foreground">Protect main</span>
+              <ProtectMainToggle
+                id="protect-main-toolbar-toggle"
+                checked={protectMain}
+                onChange={setProtectMain}
+                className="scale-90"
+              />
+            </div>
           </div>
         )}
       </header>
@@ -1471,7 +1491,9 @@ export default function AnalyzeFilePage() {
                   Protect main
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  Create a branch first, then commit the current file to that branch.
+                  {protectMain
+                    ? 'Create a branch first, then commit the current file to that branch.'
+                    : `Protect main is off. Turning it on will create a new branch first. Otherwise, this will commit directly to ${selectedRepository?.branch || selectedRepository?.defaultBranch || 'the current branch'}.`}
                 </p>
               </div>
               <button
@@ -1483,40 +1505,64 @@ export default function AnalyzeFilePage() {
               </button>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <label className="space-y-1 text-sm">
-                <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
-                  Base branch
-                </span>
-                <select
-                  value={protectSaveState.baseBranch}
-                  onChange={(event) => setProtectSaveState((prev) => ({ ...prev, baseBranch: event.target.value }))}
-                  className="w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
-                  disabled={createPrBranchesLoading}
-                >
-                  {(protectSaveBaseBranchOptions.length > 0 ? protectSaveBaseBranchOptions : [selectedRepository?.defaultBranch || selectedRepository?.branch || 'main'])
-                    .filter(Boolean)
-                    .map((branch) => (
-                      <option key={branch} value={branch}>
-                        {branch}
-                      </option>
-                    ))}
-                </select>
-                <p className="text-[11px] text-muted-foreground">This branch will be used as the base for the new protected save branch.</p>
-                {createPrBranchesError && <p className="text-xs text-muted-foreground">{createPrBranchesError}</p>}
-              </label>
+            <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/70 px-3 py-2">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                  Protect main toggle
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {protectMain ? 'Branch protection is enabled.' : 'Branch protection is disabled.'}
+                </p>
+              </div>
+              <ProtectMainToggle
+                id="protect-main-modal-toggle"
+                checked={protectMain}
+                onChange={setProtectMain}
+              />
+            </div>
 
-              <label className="space-y-1 text-sm">
-                <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
-                  New branch name
-                </span>
-                <input
-                  value={protectSaveState.newBranchName}
-                  onChange={(event) => setProtectSaveState((prev) => ({ ...prev, newBranchName: event.target.value }))}
-                  className="w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
-                />
-                <p className="text-[11px] text-muted-foreground">The commit will land on this new branch, not on main.</p>
-              </label>
+            <div className="grid gap-4 md:grid-cols-2">
+              {protectMain ? (
+                <>
+                  <label className="space-y-1 text-sm">
+                    <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                      Base branch
+                    </span>
+                    <select
+                      value={protectSaveState.baseBranch}
+                      onChange={(event) => setProtectSaveState((prev) => ({ ...prev, baseBranch: event.target.value }))}
+                      className="w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
+                      disabled={createPrBranchesLoading}
+                    >
+                      {(protectSaveBaseBranchOptions.length > 0 ? protectSaveBaseBranchOptions : [selectedRepository?.defaultBranch || selectedRepository?.branch || 'main'])
+                        .filter(Boolean)
+                        .map((branch) => (
+                          <option key={branch} value={branch}>
+                            {branch}
+                          </option>
+                        ))}
+                    </select>
+                    <p className="text-[11px] text-muted-foreground">This branch will be used as the base for the new protected save branch.</p>
+                    {createPrBranchesError && <p className="text-xs text-muted-foreground">{createPrBranchesError}</p>}
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
+                      New branch name
+                    </span>
+                    <input
+                      value={protectSaveState.newBranchName}
+                      onChange={(event) => setProtectSaveState((prev) => ({ ...prev, newBranchName: event.target.value }))}
+                      className="w-full rounded-xl border border-border/60 bg-background/70 px-3 py-2 text-sm outline-none"
+                    />
+                    <p className="text-[11px] text-muted-foreground">The commit will land on this new branch, not on main.</p>
+                  </label>
+                </>
+              ) : (
+                <div className="md:col-span-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700">
+                  Protect main is off. Turning it on will create a branch before saving. If you continue, the change will commit directly to the current branch.
+                </div>
+              )}
 
               <label className="space-y-1 text-sm md:col-span-2">
                 <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/60">
@@ -1552,7 +1598,7 @@ export default function AnalyzeFilePage() {
                 className="rounded-xl bg-gold text-white"
                 disabled={protectSaveState.isSubmitting}
               >
-                {protectSaveState.isSubmitting ? 'Saving...' : 'Save to Branch'}
+                {protectSaveState.isSubmitting ? 'Saving...' : 'Save Branch'}
               </Button>
             </div>
           </div>
