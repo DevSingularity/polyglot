@@ -8,7 +8,8 @@ import { PublicGuard, PrivateGuard } from '@/features/auth';
 
 import Layout from '@/components/layout/Layout';
 
-import { LandingPage, LoginPage, SignupPage } from '@/features/auth';
+import { LandingPage } from '@/components/landing/LandingPage';
+import { LoginPage, SignupPage } from '@/features/auth';
 import { DashboardPage }                      from '@/features/dashboard';
 import { UploadRepoPage, GraphPage }             from '@/features/graph';
 import { AnalyzeFilePage, AnalyzePage }             from '@/features/analyze';
