@@ -10,20 +10,26 @@ import {
   validateRepoFileUpdateBody,
 } from '../middleware/validate.middleware.js';
 import {
-  analyzeController,
-  browseLocalPathController,
   getRepositoryFileController,
-  listAnalysisHistoryController,
   listBranchesController,
   listRepositoryDirectoryController,
   listRepositoryStructureController,
   listOwnedReposController,
-  localPickerCapabilitiesController,
   resolvePublicRepoController,
   updateRepositoryFileController,
-  validateLocalPathController,
+} from '../githubBrowser/githubBrowser.controller.js';
+import {
   createPrCommitController,
-} from '../controllers/analyze.controller.js';
+} from '../prCommit/prCommit.controller.js';
+import {
+  listAnalysisHistoryController,
+} from '../history/history.controller.js';
+import {
+  browseLocalPathController,
+  localPickerCapabilitiesController,
+  validateLocalPathController,
+} from '../localPicker/localPicker.controller.js';
+import { analyzeController } from '../upload/upload.controller.js';
 
 const router = Router();
 

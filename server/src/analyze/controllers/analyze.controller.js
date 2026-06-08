@@ -1,4 +1,3 @@
-import path from 'path';
 import { validateLocalRepository } from '../services/analyze.service.js';
 import {
   getLocalPickerCapabilities,
@@ -17,146 +16,13 @@ import {
 } from '../services/githubApi.service.js';
 import { pgPool, redisClient } from '../../infrastructure/connections.js';
 import {
-  buildAnalysisHistoryCacheKey,
-  cacheTtl,
   invalidateAnalysisHistoryCacheForUser,
   invalidateRepositoriesCacheForUser,
   readJsonCache,
-  writeJsonCache,
-} from '../../infrastructure/cache.js';
-import { enqueueAnalysisJob } from '../../queue/analysisQueue.js';
-import { getAuthUser, resolveDatabaseUserId } from '../../utils/authUser.js';
+import { inferRepositoryName, inferRepositoryOwner } from '../shared/repoIdentity.js';
+import { analyzeController } from '../upload/upload.controller.js';
 
-function buildRepositoryIdentity(input) {
-  if (input?.source === 'local') {
-    return {
-      source: 'local',
-      fullName: input.localPath,
-      githubOwner: null,
-      githubRepo: null,
-      defaultBranch: null,
-      branch: null,
-    };
-  }
-
-  const github = input?.github || {};
-  let owner = github.owner || null;
-  let repo = github.repo || null;
-
-  if ((!owner || !repo) && github.url) {
-    const parsed = parseGitHubRepoUrl(github.url);
-    owner = parsed.owner;
-    repo = parsed.repo;
-  }
-
-  if (!owner || !repo) {
-    const err = new Error('GitHub source requires owner/repo or a valid GitHub URL.');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  return {
-    source: 'github',
-    fullName: `${owner}/${repo}`,
-    githubOwner: owner,
-    githubRepo: repo,
-    defaultBranch: github.branch || null,
-    branch: github.branch || null,
-  };
-}
-
-function inferRepositoryName({ source, fullName, githubRepo }) {
-  if (githubRepo) return githubRepo;
-  if (!fullName) return source === 'local' ? 'Local repository' : 'Unknown repository';
-
-  if (source === 'local') {
-    const normalized = String(fullName).replace(/\\/g, '/');
-    return path.posix.basename(normalized) || 'Local repository';
-  }
-
-  const parts = String(fullName).split('/').filter(Boolean);
-  return parts[1] || parts[0] || 'Unknown repository';
-}
-
-function inferRepositoryOwner({ source, fullName, githubOwner }) {
-  if (githubOwner) return githubOwner;
-  if (source === 'local') return 'local';
-
-  const parts = String(fullName || '').split('/').filter(Boolean);
-  return parts[0] || 'unknown';
-}
-
-async function createOrGetRepository({ userId, repository }) {
-  const result = await pgPool.query(
-    `
-      INSERT INTO repositories (
-        owner_id,
-        source,
-        full_name,
-        github_owner,
-        github_repo,
-        default_branch,
-        last_scanned_at,
-        scan_count
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, NOW(), 1)
-      ON CONFLICT (owner_id, full_name)
-      DO UPDATE
-      SET source = EXCLUDED.source,
-          github_owner = COALESCE(EXCLUDED.github_owner, repositories.github_owner),
-          github_repo = COALESCE(EXCLUDED.github_repo, repositories.github_repo),
-          default_branch = COALESCE(EXCLUDED.default_branch, repositories.default_branch),
-          last_scanned_at = NOW(),
-          scan_count = repositories.scan_count + 1
-      RETURNING id
-    `,
-    [
-      userId,
-      repository.source,
-      repository.fullName,
-      repository.githubOwner,
-      repository.githubRepo,
-      repository.defaultBranch,
-    ],
-  );
-
-  return result.rows[0]?.id;
-}
-
-async function createAnalysisJob({ repositoryId, userId, branch }) {
-  const result = await pgPool.query(
-    `
-      INSERT INTO analysis_jobs (repository_id, user_id, branch, status)
-      VALUES ($1, $2, $3, 'queued')
-      RETURNING id
-    `,
-    [repositoryId, userId, branch || null],
-  );
-
-  return result.rows[0]?.id;
-}
-
-export async function analyzeController(req, res, next) {
-  try {
-    const authUser = getAuthUser(req);
-    if (!authUser?.id) {
-      return res.status(401).json({
-        error: 'Authentication required to start analysis jobs.',
-      });
-    }
-
-    const userId = await resolveDatabaseUserId(authUser);
-    if (!userId) {
-      const err = new Error('Failed to resolve authenticated user record.');
-      err.statusCode = 500;
-      throw err;
-    }
-
-    const repository = buildRepositoryIdentity(req.body);
-    const repositoryId = await createOrGetRepository({ userId, repository });
-
-    if (!repositoryId) {
-      const err = new Error('Failed to resolve repository record for analysis job.');
+export { analyzeController };
       err.statusCode = 500;
       throw err;
     }
@@ -182,6 +48,7 @@ export async function analyzeController(req, res, next) {
       // forceNeo4j: true,
       // forcePostgres: true,
     };
+      writeJsonCache,
 
     await enqueueAnalysisJob({
       jobId,
